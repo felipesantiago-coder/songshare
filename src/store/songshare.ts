@@ -1,0 +1,274 @@
+import { create } from 'zustand'
+
+// ─── Types ──────────────────────────────────────────────
+export interface VoiceStreamInfo {
+  stream: MediaStream
+  audioContext: AudioContext
+  gainNode: GainNode
+  volume: number
+  isSpeaking: boolean
+}
+
+export interface RoomUser {
+  id: string
+  username: string
+  isHost: boolean
+  peerId?: string // PeerJS peer ID for voice chat
+}
+
+export interface Track {
+  id: string
+  name: string
+  artist: string
+  duration: number
+  addedBy: string
+  addedAt: number
+  lyrics: string
+}
+
+export interface ChatMessage {
+  id: string
+  username: string
+  content: string
+  timestamp: number
+  type: 'user' | 'system'
+}
+
+export interface RoomState {
+  code: string
+  hostId: string
+  users: RoomUser[]
+  playlist: Track[]
+  currentTrackIndex: number
+  isPlaying: boolean
+  currentTime: number
+  chatMessages: ChatMessage[]
+}
+
+type AppPhase = 'landing' | 'room'
+
+// ─── Store ──────────────────────────────────────────────
+interface SongShareStore {
+  // App state
+  phase: AppPhase
+  username: string
+  roomCode: string
+  socket: any | null
+  isConnected: boolean
+
+  // Room state
+  room: RoomState | null
+
+  // Audio data cache (trackId -> blob URL)
+  audioCache: Map<string, string>
+
+  // Track data chunks being assembled
+  pendingChunks: Map<string, ArrayBuffer[]>
+
+  // UI state
+  showChat: boolean
+  showLyrics: boolean
+  showVoicePanel: boolean
+  isDragOver: boolean
+  // Edit lyrics dialog
+  editingLyricsTrackId: string | null
+
+  // Voice chat state
+  isMicActive: boolean
+  isMicMuted: boolean
+  micStream: MediaStream | null
+  voiceStreams: Map<string, VoiceStreamInfo>
+  allPeerIds: string[] // All peer IDs in room (including host)
+
+  // Actions
+  setPhase: (phase: AppPhase) => void
+  setUsername: (username: string) => void
+  setRoomCode: (code: string) => void
+  setSocket: (socket: any) => void
+  setIsConnected: (connected: boolean) => void
+  setRoom: (room: RoomState | null) => void
+  updateRoom: (partial: Partial<RoomState>) => void
+
+  // Audio cache actions
+  setAudioUrl: (trackId: string, url: string) => void
+  getAudioUrl: (trackId: string) => string | undefined
+
+  // Track data chunk management
+  addChunk: (trackId: string, chunkIndex: number, totalChunks: number, data: ArrayBuffer) => void
+  getAssembledBlob: (trackId: string) => ArrayBuffer | null
+  clearPendingChunks: (trackId: string) => void
+
+  // UI actions
+  setShowChat: (show: boolean) => void
+  setShowLyrics: (show: boolean) => void
+  setShowVoicePanel: (show: boolean) => void
+  setIsDragOver: (dragOver: boolean) => void
+  setEditingLyricsTrackId: (trackId: string | null) => void
+
+  // Voice chat actions
+  setMicActive: (active: boolean) => void
+  setMicMuted: (muted: boolean) => void
+  setMicStream: (stream: MediaStream | null) => void
+  addVoiceStream: (peerId: string, info: VoiceStreamInfo) => void
+  removeVoiceStream: (peerId: string) => void
+  setVoiceStreamVolume: (peerId: string, volume: number) => void
+  setVoiceStreamSpeaking: (peerId: string, speaking: boolean) => void
+  clearVoiceStreams: () => void
+  setAllPeerIds: (peerIds: string[]) => void
+
+  // Reset
+  reset: () => void
+}
+
+const initialState = {
+  phase: 'landing' as AppPhase,
+  username: '',
+  roomCode: '',
+  socket: null,
+  isConnected: false,
+  room: null,
+  audioCache: new Map<string, string>(),
+  pendingChunks: new Map<string, ArrayBuffer[]>(),
+  showChat: false,
+  showLyrics: false,
+  showVoicePanel: false,
+  isDragOver: false,
+  editingLyricsTrackId: null,
+  isMicActive: false,
+  isMicMuted: false,
+  micStream: null,
+  voiceStreams: new Map<string, VoiceStreamInfo>(),
+  allPeerIds: [],
+}
+
+export const useSongShareStore = create<SongShareStore>((set, get) => ({
+  ...initialState,
+
+  setPhase: (phase) => set({ phase }),
+  setUsername: (username) => set({ username }),
+  setRoomCode: (code) => set({ roomCode: code }),
+  setSocket: (socket) => set({ socket }),
+  setIsConnected: (connected) => set({ isConnected: connected }),
+  setRoom: (room) => set({ room }),
+
+  updateRoom: (partial) =>
+    set((state) => ({
+      room: state.room ? { ...state.room, ...partial } : null,
+    })),
+
+  setAudioUrl: (trackId, url) =>
+    set((state) => {
+      const newCache = new Map(state.audioCache)
+      newCache.set(trackId, url)
+      return { audioCache: newCache }
+    }),
+
+  getAudioUrl: (trackId) => get().audioCache.get(trackId),
+
+  addChunk: (trackId, chunkIndex, totalChunks, data) =>
+    set((state) => {
+      const newPending = new Map(state.pendingChunks)
+      let chunks = newPending.get(trackId) || []
+      // Ensure array is large enough
+      while (chunks.length < totalChunks) {
+        chunks.push(new ArrayBuffer(0))
+      }
+      chunks[chunkIndex] = data
+      newPending.set(trackId, chunks)
+      return { pendingChunks: newPending }
+    }),
+
+  getAssembledBlob: (trackId) => {
+    const chunks = get().pendingChunks.get(trackId)
+    if (!chunks || chunks.length === 0) return null
+    const totalLength = chunks.reduce((acc, chunk) => acc + chunk.byteLength, 0)
+    const result = new Uint8Array(totalLength)
+    let offset = 0
+    for (const chunk of chunks) {
+      result.set(new Uint8Array(chunk), offset)
+      offset += chunk.byteLength
+    }
+    return result.buffer
+  },
+
+  clearPendingChunks: (trackId) =>
+    set((state) => {
+      const newPending = new Map(state.pendingChunks)
+      newPending.delete(trackId)
+      return { pendingChunks: newPending }
+    }),
+
+  setShowChat: (show) => set({ showChat: show }),
+  setShowLyrics: (show) => set({ showLyrics: show }),
+  setShowVoicePanel: (show) => set({ showVoicePanel: show }),
+  setIsDragOver: (dragOver) => set({ isDragOver: dragOver }),
+  setEditingLyricsTrackId: (trackId) => set({ editingLyricsTrackId: trackId }),
+
+  setMicActive: (active) => set({ isMicActive: active }),
+  setMicMuted: (muted) => set({ isMicMuted: muted }),
+  setMicStream: (stream) => set({ micStream: stream }),
+  addVoiceStream: (peerId, info) =>
+    set((state) => {
+      const newMap = new Map(state.voiceStreams)
+      newMap.set(peerId, info)
+      return { voiceStreams: newMap }
+    }),
+  removeVoiceStream: (peerId) =>
+    set((state) => {
+      const info = state.voiceStreams.get(peerId)
+      if (info) {
+        info.gainNode.disconnect()
+        info.audioContext.close().catch(() => {})
+        info.stream.getTracks().forEach((t) => t.stop())
+      }
+      const newMap = new Map(state.voiceStreams)
+      newMap.delete(peerId)
+      return { voiceStreams: newMap }
+    }),
+  setVoiceStreamVolume: (peerId, volume) =>
+    set((state) => {
+      const info = state.voiceStreams.get(peerId)
+      if (info) {
+        info.gainNode.gain.value = volume
+      }
+      const newMap = new Map(state.voiceStreams)
+      newMap.set(peerId, { ...info!, volume })
+      return { voiceStreams: newMap }
+    }),
+  setVoiceStreamSpeaking: (peerId, speaking) =>
+    set((state) => {
+      const info = state.voiceStreams.get(peerId)
+      if (!info) return state
+      const newMap = new Map(state.voiceStreams)
+      newMap.set(peerId, { ...info, isSpeaking: speaking })
+      return { voiceStreams: newMap }
+    }),
+  clearVoiceStreams: () => {
+    const streams = get().voiceStreams
+    streams.forEach((info) => {
+      info.gainNode.disconnect()
+      info.audioContext.close().catch(() => {})
+      info.stream.getTracks().forEach((t) => t.stop())
+    })
+    set({ voiceStreams: new Map() })
+  },
+  setAllPeerIds: (peerIds) => set({ allPeerIds: peerIds }),
+
+  reset: () => {
+    const streams = get().voiceStreams
+    streams.forEach((info) => {
+      info.gainNode.disconnect()
+      info.audioContext.close().catch(() => {})
+      info.stream.getTracks().forEach((t) => t.stop())
+    })
+    const micStream = get().micStream
+    if (micStream) micStream.getTracks().forEach((t) => t.stop())
+    set({
+      ...initialState,
+      audioCache: new Map<string, string>(),
+      pendingChunks: new Map<string, ArrayBuffer[]>(),
+      voiceStreams: new Map<string, VoiceStreamInfo>(),
+      micStream: null,
+    })
+  },
+}))
