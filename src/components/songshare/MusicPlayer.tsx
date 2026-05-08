@@ -1,6 +1,7 @@
 'use client'
 
-import React, { useCallback } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { RefObject } from 'react'
 import { formatTime } from './utils'
 import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -8,7 +9,7 @@ import { Slider } from '@/components/ui/slider'
 import { useSongShareStore } from '@/store/songshare'
 
 interface MusicPlayerProps {
-  audioRef: React.RefObject<HTMLAudioElement | null>
+  audioRef: RefObject<HTMLAudioElement | null>
   onPlay: () => void
   onPause: () => void
   onSeek: (time: number) => void
@@ -25,16 +26,38 @@ export function MusicPlayer({
   onPrevious,
 }: MusicPlayerProps) {
   const { room, socket } = useSongShareStore()
-  const [isMuted, setIsMuted] = React.useState(false)
-  const [volume, setVolume] = React.useState(1)
+  const [isMuted, setIsMuted] = useState(false)
+  const [volume, setVolume] = useState(1)
+  // Smooth progress: read audio.currentTime directly via rAF (no Zustand re-renders)
+  const [smoothTime, setSmoothTime] = useState(0)
+  const rafRef = useRef<number>(0)
 
   const isHost = room?.hostId === socket?.id
   const currentTrack = room && room.currentTrackIndex >= 0
     ? room.playlist[room.currentTrackIndex]
     : null
 
-  // Use room.currentTime — updated by usePeerShare via timeupdate (host) or time-sync (guests)
-  const currentTime = room?.currentTime ?? 0
+  // rAF loop reads audio element directly for smooth progress (~10fps)
+  // This avoids updating Zustand store on every timeupdate, preventing
+  // all room subscribers from re-rendering 4x/sec
+  useEffect(() => {
+    let active = true
+    let lastUpdate = 0
+    const tick = () => {
+      if (!active) return
+      const now = performance.now()
+      if (now - lastUpdate >= 100) {
+        lastUpdate = now
+        setSmoothTime(audioRef.current?.currentTime ?? 0)
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => {
+      active = false
+      cancelAnimationFrame(rafRef.current)
+    }
+  }, [audioRef])
 
   const handleSeek = useCallback((value: number[]) => {
     onSeek(value[0])
@@ -76,7 +99,7 @@ export function MusicPlayer({
       <div className="space-y-1.5 sm:space-y-1 mb-3 sm:mb-3">
         <div className="pt-3 pb-2 sm:py-0">
           <Slider
-            value={[currentTime]}
+            value={[smoothTime]}
             max={currentTrack?.duration || 100}
             step={0.1}
             onValueChange={isHost ? handleSeek : undefined}
@@ -85,7 +108,7 @@ export function MusicPlayer({
           />
         </div>
         <div className="flex justify-between text-sm sm:text-xs text-zinc-500">
-          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(smoothTime)}</span>
           <span>{currentTrack ? formatTime(currentTrack.duration) : '0:00'}</span>
         </div>
       </div>

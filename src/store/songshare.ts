@@ -79,6 +79,8 @@ interface SongShareStore {
   micStream: MediaStream | null
   voiceStreams: Map<string, VoiceStreamInfo>
   allPeerIds: string[] // All peer IDs in room (including host)
+  // Per-user mic state (userId -> { isMicActive, isMicMuted })
+  userMicStates: Map<string, { isMicActive: boolean; isMicMuted: boolean }>
 
   // Actions
   setPhase: (phase: AppPhase) => void
@@ -115,6 +117,8 @@ interface SongShareStore {
   setVoiceStreamSpeaking: (peerId: string, speaking: boolean) => void
   clearVoiceStreams: () => void
   setAllPeerIds: (peerIds: string[]) => void
+  setUserMicState: (userId: string, state: { isMicActive: boolean; isMicMuted: boolean }) => void
+  removeUserMicState: (userId: string) => void
 
   // Reset
   reset: () => void
@@ -139,6 +143,7 @@ const initialState = {
   micStream: null,
   voiceStreams: new Map<string, VoiceStreamInfo>(),
   allPeerIds: [],
+  userMicStates: new Map<string, { isMicActive: boolean; isMicMuted: boolean }>(),
 }
 
 export const useSongShareStore = create<SongShareStore>((set, get) => ({
@@ -253,6 +258,18 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
     set({ voiceStreams: new Map() })
   },
   setAllPeerIds: (peerIds) => set({ allPeerIds: peerIds }),
+  setUserMicState: (userId, micState) =>
+    set((state) => {
+      const newMap = new Map(state.userMicStates)
+      newMap.set(userId, micState)
+      return { userMicStates: newMap }
+    }),
+  removeUserMicState: (userId) =>
+    set((state) => {
+      const newMap = new Map(state.userMicStates)
+      newMap.delete(userId)
+      return { userMicStates: newMap }
+    }),
 
   reset: () => {
     const streams = get().voiceStreams

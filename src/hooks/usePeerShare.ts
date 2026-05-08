@@ -20,6 +20,7 @@ export function usePeerShare() {
   const managerRef = useRef<PeerManager | null>(null)
   const timeSyncRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const chunksCountRef = useRef<Map<string, number>>(new Map())
+  const lastTimeUpdateRef = useRef(0) // Throttle timeupdate state writes
   const speakingIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map())
 
   // ── Zustand selectors ────────────────────────────
@@ -150,9 +151,36 @@ export function usePeerShare() {
     })
 
     /* ─── Event: join-request (host recebe) ─────── */
-    const unsubJoin = manager.on('join-request', (data: { username: string; userId: string; peerId: string }) => {
+    const unsubJoin = manager.on('join-request', (data: { username: string; userId: string; peerId: string; reconnecting?: boolean }) => {
       const state = useSongShareStore.getState()
       if (!state.room) return
+
+      // If reconnecting, check if user already exists in room
+      const existingUser = state.room.users.find((u) => u.id === data.userId)
+      if (data.reconnecting && existingUser) {
+        // User is reconnecting — update peerId and send current state
+        const updatedUsers = state.room.users.map((u) =>
+          u.id === data.userId ? { ...u, peerId: data.peerId } : u
+        )
+        const updated: RoomState = { ...state.room, users: updatedUsers }
+        useSongShareStore.getState().setRoom(updated)
+
+        // Send current room state so they get back in sync
+        manager.sendTo(data.peerId, { type: 'join-accepted', room: updated })
+
+        // Re-send peer list for voice mesh
+        const allPeers = [manager.getMyPeerId(), ...Array.from(manager.connections.keys())]
+        manager.sendTo(data.peerId, { type: 'peer-list', peerIds: allPeers })
+        setAllPeerIds(allPeers)
+
+        // If host mic is active, call the reconnected peer
+        const hostStore = useSongShareStore.getState()
+        if (hostStore.isMicActive && hostStore.micStream) {
+          manager.callWithStream(data.peerId, hostStore.micStream)
+        }
+
+        return
+      }
 
       const user: RoomUser = { id: data.userId, username: data.username, isHost: false, peerId: data.peerId }
       const sysMsg: ChatMessage = {
@@ -193,6 +221,40 @@ export function usePeerShare() {
         data.peerId,
       )
       manager.broadcast(sysMsg)
+    })
+
+    /* ─── Event: listener connection lost (host side) ── */
+    const unsubListenerLost = manager.on('listener-connection-lost', (data: { peerId: string }) => {
+      const state = useSongShareStore.getState()
+      if (!state.room || !manager.isHost) return
+
+      // Find user by peerId and notify others
+      const user = state.room.users.find((u) => u.peerId === data.peerId)
+      if (user) {
+        const updated: RoomState = {
+          ...state.room,
+          users: state.room.users.filter((u) => u.peerId !== data.peerId),
+          chatMessages: [
+            ...state.room.chatMessages,
+            {
+              id: generateId(),
+              username: 'Sistema',
+              content: `${user.username} perdeu a conexao.`,
+              timestamp: Date.now(),
+              type: 'system' as const,
+            },
+          ],
+        }
+        useSongShareStore.getState().setRoom(updated)
+        manager.broadcast({ type: 'user-left', room: { users: updated.users } })
+
+        // Clean up voice
+        removeVoiceStream(data.peerId)
+        stopSpeakingDetection(data.peerId)
+        manager.hangupMedia(data.peerId)
+        setAllPeerIds(state.allPeerIds.filter((pid) => pid !== data.peerId))
+        removeUserMicState(user.id)
+      }
     })
 
     /* ─── Event: join-accepted (ouvinte recebe) ── */
@@ -389,6 +451,16 @@ export function usePeerShare() {
 
     const unsubPlaylist = manager.on('playlist-updated', (data: Partial<RoomState>) => {
       updateRoom(data)
+
+      // Request audio data for any tracks we don't have yet (new tracks added after join)
+      if (data.playlist && !manager.isHost) {
+        const store = useSongShareStore.getState()
+        data.playlist.forEach((track) => {
+          if (!store.audioCache.has(track.id) && !store.pendingChunks.has(track.id)) {
+            manager.sendToHost({ type: 'request-track-data', trackId: track.id })
+          }
+        })
+      }
     })
 
     /* ─── Letras de música ───────────────────────── */
@@ -448,19 +520,21 @@ export function usePeerShare() {
 
       fetch(url)
         .then((r) => r.arrayBuffer())
-        .then((buffer) => {
+        .then(async (buffer) => {
           const uint8 = new Uint8Array(buffer)
           const total = Math.ceil(uint8.byteLength / CHUNK_SIZE)
           for (let i = 0; i < total; i++) {
             const start = i * CHUNK_SIZE
             const end = Math.min(start + CHUNK_SIZE, uint8.byteLength)
-            manager.sendTo(data.senderPeerId, {
+            await manager.sendChunkTo(data.senderPeerId, {
               type: 'track-data-chunk',
               trackId: data.trackId,
               chunkIndex: i,
               totalChunks: total,
               data: uint8.slice(start, end),
             })
+            // Small pause every 5 chunks to avoid buffer overflow
+            if (i % 5 === 0) await new Promise((r) => setTimeout(r, 5))
           }
         })
         .catch(console.error)
@@ -486,7 +560,7 @@ export function usePeerShare() {
         unsubIncomingCall, unsubMediaCallClosed,
         unsubJoin, unsubAccepted, unsubPeerList, unsubNewPeer, unsubVoiceState,
         unsubHostOff,
-        unsubUserJoined, unsubUserLeft, unsubLeftReq,
+        unsubUserJoined, unsubUserLeft, unsubLeftReq, unsubListenerLost,
         unsubPlay, unsubPause, unsubSeek, unsubSync,
         unsubTrackChanged, unsubEnded, unsubPlaylist,
         unsubLyrics,
@@ -531,8 +605,10 @@ export function usePeerShare() {
     if (!audio) return
 
     const onTimeUpdate = () => {
-      // Update room.currentTime for ALL users (host + listeners)
-      // This ensures the progress bar stays smooth
+      // Throttle: only update Zustand store ~2x/sec to avoid excessive re-renders
+      const now = performance.now()
+      if (now - lastTimeUpdateRef.current < 500) return
+      lastTimeUpdateRef.current = now
       useSongShareStore.getState().updateRoom({ currentTime: audio.currentTime })
     }
 
@@ -694,7 +770,7 @@ export function usePeerShare() {
       audioRef.current.src = blobUrl
     }
 
-    // Enviar arquivo em chunks para todos os ouvintes
+    // Enviar arquivo em chunks para todos os ouvintes (with backpressure)
     const buffer = await file.arrayBuffer()
     const uint8 = new Uint8Array(buffer)
     const totalChunks = Math.ceil(uint8.byteLength / CHUNK_SIZE)
@@ -703,7 +779,7 @@ export function usePeerShare() {
       const start = i * CHUNK_SIZE
       const end = Math.min(start + CHUNK_SIZE, uint8.byteLength)
 
-      manager.broadcast({
+      await manager.broadcastChunk({
         type: 'track-data-chunk',
         trackId,
         chunkIndex: i,
@@ -711,8 +787,8 @@ export function usePeerShare() {
         data: uint8.slice(start, end),
       })
 
-      // Pausinha a cada 10 chunks para não congestionar
-      if (i % 10 === 0) await new Promise((r) => setTimeout(r, 10))
+      // Small pause every 5 chunks to avoid overwhelming the DataChannel
+      if (i % 5 === 0) await new Promise((r) => setTimeout(r, 5))
     }
   }, [username, setRoom, setAudioUrl])
 

@@ -200,15 +200,81 @@ export class PeerManager {
     conn.on('data', (data) => this._route(data, conn.peer))
 
     conn.on('close', () => {
-      this.connections.delete(conn.peer)
+      const peerId = conn.peer
+      this.connections.delete(peerId)
+
       if (!this.isHost) {
-        this.emit('host-disconnected', {})
+        // Listener lost connection to host — attempt reconnection
+        this._attemptReconnectToHost(peerId)
+      } else {
+        // Host: a listener's connection dropped — notify others and clean up
+        this.emit('listener-connection-lost', { peerId })
       }
     })
 
     conn.on('error', (err) => {
       console.error('[SongShare] Conn error:', err)
     })
+  }
+
+  /** Listener: try to re-establish DataConnection to host. */
+  private _attemptReconnectToHost(hostPeerId: string) {
+    // Don't try if we're no longer in a room
+    if (!this.roomCode || !this.peer || this.peer.destroyed) return
+
+    console.warn('[SongShare] DataConnection lost, reconnecting to host...')
+
+    const maxAttempts = 5
+    let attempt = 0
+
+    const tryConnect = () => {
+      if (!this.roomCode || !this.peer || this.peer.destroyed || this.peer.disconnected) return
+      if (this.connections.has(hostPeerId)) return // Already reconnected
+      if (attempt >= maxAttempts) {
+        console.error('[SongShare] Failed to reconnect after', maxAttempts, 'attempts')
+        this.emit('host-disconnected', {})
+        return
+      }
+
+      attempt++
+      console.log(`[SongShare] Reconnect attempt ${attempt}/${maxAttempts}`)
+
+      try {
+        const newConn = this.peer!.connect(hostPeerId, { reliable: true })
+
+        const timeout = setTimeout(() => {
+          newConn.close()
+          setTimeout(tryConnect, 2000 * attempt) // Exponential backoff
+        }, 8000)
+
+        newConn.on('open', () => {
+          clearTimeout(timeout)
+          this.connections.set(newConn.peer, newConn)
+          this._wireConnection(newConn)
+          // Re-announce presence to get back in sync
+          newConn.send({
+            type: 'join-request',
+            username: this.username,
+            userId: this.userId,
+            reconnecting: true,
+          })
+          console.log('[SongShare] Reconnected to host successfully')
+        })
+
+        newConn.on('error', () => {
+          clearTimeout(timeout)
+          setTimeout(tryConnect, 2000 * attempt)
+        })
+
+        newConn.on('close', () => {
+          clearTimeout(timeout)
+        })
+      } catch (e) {
+        setTimeout(tryConnect, 2000 * attempt)
+      }
+    }
+
+    setTimeout(tryConnect, 1500)
   }
 
   /* ── Roteamento de mensagens ──────────────────── */
@@ -255,6 +321,33 @@ export class PeerManager {
         try { conn.send(data) } catch (e) { console.error('[SongShare] broadcast error:', e) }
       }
     })
+  }
+
+  /**
+   * Send binary chunk to a specific peer with backpressure.
+   * Waits when the DataChannel send buffer is too full to avoid silent data loss.
+   */
+  async sendChunkTo(peerId: string, data: any, maxBuffer = 1 * 1024 * 1024): Promise<boolean> {
+    const conn = this.connections.get(peerId)
+    if (!conn?.open) return false
+
+    // PeerJS DataConnection wraps RTCDataChannel — access via _dc or dataChannel
+    const dc = (conn as any)._dc || (conn as any).dataChannel
+    if (dc) {
+      let waits = 0
+      while (dc.bufferedAmount > maxBuffer && waits < 200) {
+        await new Promise((r) => setTimeout(r, 20))
+        waits++
+      }
+    }
+
+    try {
+      conn.send(data)
+      return true
+    } catch (e) {
+      console.error('[SongShare] sendChunkTo error:', e)
+      return false
+    }
   }
 
   sendToHost(data: any) {
@@ -312,6 +405,32 @@ export class PeerManager {
       try { call.close() } catch { /* noop */ }
     })
     this.mediaCalls.clear()
+  }
+
+  /**
+   * Broadcast binary chunk to all connections with backpressure.
+   * Waits when any DataChannel send buffer is too full.
+   */
+  async broadcastChunk(data: any, maxBuffer = 1 * 1024 * 1024): Promise<void> {
+    const promises: Promise<void>[] = []
+    this.connections.forEach((conn, peerId) => {
+      if (conn.open) {
+        promises.push(
+          (async () => {
+            const dc = (conn as any)._dc || (conn as any).dataChannel
+            if (dc) {
+              let waits = 0
+              while (dc.bufferedAmount > maxBuffer && waits < 200) {
+                await new Promise((r) => setTimeout(r, 20))
+                waits++
+              }
+            }
+            try { conn.send(data) } catch (e) { console.error('[SongShare] broadcastChunk error:', e) }
+          })()
+        )
+      }
+    })
+    await Promise.all(promises)
   }
 
   /** Retorna a lista de peer IDs conectados (data connections). */
