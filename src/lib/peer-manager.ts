@@ -39,6 +39,7 @@ export class PeerManager {
   private handlers = new Map<string, Set<Handler>>()
   private reconnectTimer: ReturnType<typeof setInterval> | null = null
   private _reconnectingToHost: string | null = null
+  private _iceServers: Array<{ urls: string; username?: string; credential?: string }> = []
 
   /* ── EventEmitter ─────────────────────────────── */
 
@@ -62,13 +63,37 @@ export class PeerManager {
 
   /* ── Conexão ao servidor de sinalização ──────── */
 
+  /** Fetch ICE servers (STUN + TURN) from our server-side API route. */
+  private async _fetchIceServers(): Promise<Array<{ urls: string; username?: string; credential?: string }>> {
+    try {
+      const res = await fetch('/api/turn-credentials')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const servers = data.iceServers
+      if (Array.isArray(servers) && servers.length > 0) {
+        console.log('[SongShare] ICE servers loaded (source:', data.source || 'unknown', ')')
+        return servers
+      }
+      throw new Error('Empty ICE servers array')
+    } catch (err) {
+      console.error('[SongShare] Failed to fetch ICE servers, using Google STUN fallback:', err)
+      // Minimal fallback — STUN only, no TURN (voice may fail for symmetric NAT users)
+      return [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+      ]
+    }
+  }
+
   /** Cria peer com ID aleatório (usado ao montar o app). Retries automatically. */
   async connect(maxRetries = 2): Promise<void> {
     this.destroy()
+    this._iceServers = await this._fetchIceServers()
     let lastError: any
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        await this._createPeer()
+        await this._createPeer(undefined)
         return
       } catch (err) {
         lastError = err
@@ -90,20 +115,14 @@ export class PeerManager {
       this.peer = new Peer(peerId, {
         debug: 0,
         config: {
-          iceServers: [
-            // STUN servers — discover public IP/port for NAT traversal
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            // TURN servers — relay traffic when P2P fails (symmetric NAT, firewalls).
-            // These free servers are provided by Open Relay Project for development.
-            // For production, replace with your own TURN server (Twilio, Xirsys, Metered, etc.)
-            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-          ],
+          iceServers: this._iceServers.length > 0
+            ? this._iceServers
+            : [
+                // STUN servers — discover public IP/port for NAT traversal
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+              ],
         },
       })
 
