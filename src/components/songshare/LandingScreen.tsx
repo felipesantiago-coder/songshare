@@ -19,11 +19,13 @@ export function LandingScreen({ onCreateRoom, onJoinRoom, isConnected }: Landing
   const [mode, setMode] = useState<'choose' | 'create' | 'join'>('choose')
   const { username, setUsername } = useSongShareStore()
 
+  const canJoin = joinCode.trim().length >= 4 && isConnected
+
   const handleJoin = useCallback(() => {
-    if (joinCode.trim().length >= 4) {
+    if (canJoin) {
       onJoinRoom(joinCode.trim())
     }
-  }, [joinCode, onJoinRoom])
+  }, [canJoin, joinCode, onJoinRoom])
 
   const canProceed = username.trim().length >= 2
 
@@ -200,6 +202,15 @@ export function LandingScreen({ onCreateRoom, onJoinRoom, isConnected }: Landing
                       maxLength={6}
                       onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
                     />
+                    {!isConnected && (
+                      <motion.p
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="text-xs text-amber-400 text-center"
+                      >
+                        Reconectando ao servidor...
+                      </motion.p>
+                    )}
                   </div>
 
                   <div className="flex gap-3">
@@ -212,7 +223,7 @@ export function LandingScreen({ onCreateRoom, onJoinRoom, isConnected }: Landing
                     </Button>
                     <Button
                       onClick={handleJoin}
-                      disabled={joinCode.trim().length < 4 || !isConnected}
+                      disabled={!canJoin}
                       className="flex-1 h-11 bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white font-medium rounded-xl shadow-lg shadow-rose-500/20"
                     >
                       <ArrowRight className="w-4 h-4 mr-2" />
