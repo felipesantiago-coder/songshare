@@ -542,6 +542,30 @@ export class PeerManager {
           pc.addEventListener('track', trackHandler)
           // Clean up when call closes
           call.on('close', () => pc.removeEventListener('track', trackHandler))
+
+          // Monitor ICE state + RTP stats for outgoing voice calls
+          pc.oniceconnectionstatechange = () => {
+            const state = pc.iceConnectionState
+            console.log('[SongShare] ICE state change for outgoing call to', peerId, ':', state)
+            if (state === 'connected' || state === 'completed') {
+              setTimeout(() => {
+                pc.getStats().then((stats) => {
+                  stats.forEach((report) => {
+                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                      console.log('[SongShare] Voice RTP stats (incoming) from', peerId,
+                        ': packetsReceived=' + report.packetsReceived,
+                        'bytesReceived=' + report.bytesReceived)
+                    }
+                    if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+                      console.log('[SongShare] Voice RTP stats (outgoing) to', peerId,
+                        ': packetsSent=' + report.packetsSent,
+                        'bytesSent=' + report.bytesSent)
+                    }
+                  })
+                }).catch(() => {})
+              }, 3000)
+            }
+          }
         }
       }, 0)
 

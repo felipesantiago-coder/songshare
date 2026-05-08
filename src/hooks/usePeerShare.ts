@@ -209,6 +209,17 @@ export function usePeerShare() {
       }
 
       store.addVoiceStream(peerId, info)
+      // ── Audio output verification ──
+      // Log AudioContext state AFTER a short delay to confirm it stays running
+      setTimeout(() => {
+        const track = remoteStream.getAudioTracks()[0]
+        console.log('[SongShare] Voice verify for', peerId, '— AC state:', audioContext.state,
+          'gain:', gainNode.gain.value,
+          'track enabled:', track?.enabled,
+          'track readyState:', track?.readyState,
+          'track muted:', track?.muted)
+      }, 2000)
+
       console.log('[SongShare] Voice stream from', peerId, 'added — AudioContext state:', audioContext.state,
         'gain:', gainNode.gain.value)
     } catch (err) {
@@ -289,8 +300,29 @@ export function usePeerShare() {
           // Also monitor ICE connection state for debugging
           pc.oniceconnectionstatechange = () => {
             const state = pc.iceConnectionState
+            console.log('[SongShare] ICE state change for incoming call from', mediaCall.peer, ':', state)
             if (state === 'failed' || state === 'disconnected') {
               console.warn('[SongShare] ICE', state, 'for voice call from', mediaCall.peer)
+            }
+            // Check RTP stats 3s after connection to verify audio packets are flowing
+            if (state === 'connected' || state === 'completed') {
+              setTimeout(() => {
+                pc.getStats().then((stats) => {
+                  stats.forEach((report) => {
+                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                      console.log('[SongShare] Voice RTP stats (incoming) from', mediaCall.peer,
+                        ': packetsReceived=' + report.packetsReceived,
+                        'bytesReceived=' + report.bytesReceived,
+                        'audioLevel=' + report.audioLevel)
+                    }
+                    if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+                      console.log('[SongShare] Voice RTP stats (outgoing) to', mediaCall.peer,
+                        ': packetsSent=' + report.packetsSent,
+                        'bytesSent=' + report.bytesSent)
+                    }
+                  })
+                }).catch(() => {})
+              }, 3000)
             }
           }
         } else {
