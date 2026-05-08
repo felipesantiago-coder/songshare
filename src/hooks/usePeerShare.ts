@@ -23,6 +23,20 @@ const NOISE_GATE_RELEASE_MS = 150 // ms to fully close gate (smooth — no click
 const NOISE_GATE_HOLD_MS = 200 // ms to hold open after speech stops (avoids cutting word endings)
 
 /**
+ * Compute latency-compensated host time.
+ * Uses sentAt for per-message transit time accuracy when available;
+ * falls back to the pre-computed RTT/2 estimate from ping/pong.
+ */
+function compensateTime(hostTime: number, sentAt?: number, latencyMs?: number): number {
+  if (sentAt) {
+    // Actual one-way transit time for THIS specific message (host→listener)
+    return hostTime + (Date.now() - sentAt) / 1000
+  }
+  // Fallback: use pre-computed latency estimate
+  return hostTime + (latencyMs ?? 0) / 1000
+}
+
+/**
  * usePeerShare — hook P2P que substitui useSongShareSocket.
  *
  * Mantém a MESMA interface pública para que page.tsx e os componentes
@@ -101,6 +115,9 @@ export function usePeerShare() {
 
     // Single shared AudioContext for this peer
     const audioContext = new AudioContext()
+    // CRITICAL: AudioContext created outside a user gesture (e.g. incoming call)
+    // starts in 'suspended' state in Chrome/Safari. Must resume to play audio.
+    audioContext.resume().catch((e) => console.warn('[SongShare] AudioContext resume failed:', e))
     const source = audioContext.createMediaStreamSource(remoteStream)
 
     // Output chain: source → gainNode → speakers
@@ -202,8 +219,8 @@ export function usePeerShare() {
 
         // If host mic is active, call the reconnected peer
         const hostStore = useSongShareStore.getState()
-        if (hostStore.isMicActive && hostStore.micStream) {
-          manager.callWithStream(data.peerId, hostStore.micStream)
+        if (hostStore.isMicActive && noiseProcessorRef.current) {
+          manager.callWithStream(data.peerId, noiseProcessorRef.current.processedStream)
         }
 
         // Notify OTHER listeners about peerId change so they can re-establish voice calls
@@ -246,9 +263,8 @@ export function usePeerShare() {
       setAllPeerIds(allPeers)
 
       // If host mic is active, call the new peer directly
-      const hostStore = useSongShareStore.getState()
-      if (hostStore.isMicActive && hostStore.micStream) {
-        manager.callWithStream(data.peerId, hostStore.micStream)
+      if (useSongShareStore.getState().isMicActive && noiseProcessorRef.current) {
+        manager.callWithStream(data.peerId, noiseProcessorRef.current.processedStream)
       }
 
       // Notify existing listeners about new peer
@@ -313,12 +329,13 @@ export function usePeerShare() {
     const unsubPeerList = manager.on('peer-list', (data: { peerIds: string[] }) => {
       setAllPeerIds(data.peerIds)
 
-      // If mic is active, call all peers now
+      // If mic is active, call all peers now with the processed stream
       const store = useSongShareStore.getState()
-      if (store.isMicActive && store.micStream) {
+      const procStream = noiseProcessorRef.current?.processedStream
+      if (store.isMicActive && procStream) {
         data.peerIds.forEach((peerId) => {
           if (peerId !== manager.getMyPeerId()) {
-            manager.callWithStream(peerId, store.micStream!)
+            manager.callWithStream(peerId, procStream)
           }
         })
       }
@@ -332,9 +349,9 @@ export function usePeerShare() {
         setAllPeerIds([...current, data.peerId])
       }
 
-      // If mic is active, call the new peer
-      if (store.isMicActive && store.micStream) {
-        manager.callWithStream(data.peerId, store.micStream)
+      // If mic is active, call the new peer with processed stream
+      if (store.isMicActive && noiseProcessorRef.current) {
+        manager.callWithStream(data.peerId, noiseProcessorRef.current.processedStream)
       }
     })
 
@@ -383,9 +400,9 @@ export function usePeerShare() {
           setAllPeerIds([...current, data.newPeerId])
         }
 
-        // If mic is active, call the new peer
-        if (store.isMicActive && store.micStream) {
-          manager.callWithStream(data.newPeerId, store.micStream)
+        // If mic is active, call the new peer with processed stream
+        if (store.isMicActive && noiseProcessorRef.current) {
+          manager.callWithStream(data.newPeerId, noiseProcessorRef.current.processedStream)
         }
       }
     })
@@ -435,29 +452,31 @@ export function usePeerShare() {
 
     /* ─── Eventos de reprodução (ouvintes recebem) ─ */
 
-    const unsubPlay = manager.on('play', (data: { currentTime: number }) => {
-      const compensated = data.currentTime + latencyRef.current / 1000
+    const unsubPlay = manager.on('play', (data: { currentTime: number; sentAt?: number }) => {
+      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
       updateRoom({ isPlaying: true, currentTime: compensated })
       const audio = audioRef.current
       if (audio) {
-        // Compensate for one-way network latency so listener starts ahead
-        if (Math.abs(audio.currentTime - compensated) > 0.8) audio.currentTime = compensated
+        // Always seek to host's compensated position to eliminate accumulated drift
+        audio.currentTime = compensated
         audio.playbackRate = 1.0 // Reset any drift correction
         audio.play().catch(() => {})
       }
     })
 
-    const unsubPause = manager.on('pause', (data: { currentTime: number }) => {
-      const compensated = data.currentTime + latencyRef.current / 1000
+    const unsubPause = manager.on('pause', (data: { currentTime: number; sentAt?: number }) => {
+      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
       updateRoom({ isPlaying: false, currentTime: compensated })
       if (audioRef.current) {
+        // Seek to host's compensated position before pausing to prevent drift accumulation
+        audioRef.current.currentTime = compensated
         audioRef.current.playbackRate = 1.0 // Reset drift correction
         audioRef.current.pause()
       }
     })
 
-    const unsubSeek = manager.on('seek', (data: { time: number }) => {
-      const compensated = data.time + latencyRef.current / 1000
+    const unsubSeek = manager.on('seek', (data: { time: number; sentAt?: number }) => {
+      const compensated = compensateTime(data.time, data.sentAt, latencyRef.current)
       updateRoom({ currentTime: compensated })
       if (audioRef.current) {
         audioRef.current.currentTime = compensated
@@ -465,12 +484,12 @@ export function usePeerShare() {
       }
     })
 
-    const unsubSync = manager.on('time-sync', (data: { currentTime: number }) => {
+    const unsubSync = manager.on('time-sync', (data: { currentTime: number; sentAt?: number }) => {
       const audio = audioRef.current
       if (!audio || audio.paused) return
 
-      // Compensate for estimated one-way latency
-      const compensatedHostTime = data.currentTime + latencyRef.current / 1000
+      // Use sentAt for accurate per-message transit time; fallback to RTT/2 estimate
+      const compensatedHostTime = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
       const drift = audio.currentTime - compensatedHostTime
 
       if (Math.abs(drift) > DRIFT_THRESHOLD_HARD) {
@@ -492,8 +511,8 @@ export function usePeerShare() {
       updateRoom({ currentTime: compensatedHostTime })
     })
 
-    const unsubTrackChanged = manager.on('track-changed', (data: { currentTrackIndex: number; currentTime: number; playlist: Track[] }) => {
-      const compensated = data.currentTime + latencyRef.current / 1000
+    const unsubTrackChanged = manager.on('track-changed', (data: { currentTrackIndex: number; currentTime: number; playlist: Track[]; sentAt?: number }) => {
+      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
       updateRoom({
         currentTrackIndex: data.currentTrackIndex,
         currentTime: compensated,
@@ -751,6 +770,7 @@ export function usePeerShare() {
             currentTrackIndex: updated.currentTrackIndex,
             currentTime: 0,
             playlist: updated.playlist,
+            sentAt: Date.now(),
           })
         } else {
           const updated = { ...st.room, isPlaying: false, currentTime: 0 }
@@ -980,7 +1000,7 @@ export function usePeerShare() {
 
     audio?.play().catch(() => {})
     updateRoom({ isPlaying: true })
-    manager.broadcast({ type: 'play', currentTime })
+    manager.broadcast({ type: 'play', currentTime, sentAt: Date.now() })
   }, [updateRoom])
 
   const pause = useCallback(() => {
@@ -992,7 +1012,7 @@ export function usePeerShare() {
 
     audio?.pause()
     updateRoom({ isPlaying: false })
-    manager.broadcast({ type: 'pause', currentTime })
+    manager.broadcast({ type: 'pause', currentTime, sentAt: Date.now() })
   }, [updateRoom])
 
   const seek = useCallback((time: number) => {
@@ -1001,7 +1021,7 @@ export function usePeerShare() {
     if (!manager.isHost || !state.room) return
 
     if (audioRef.current) audioRef.current.currentTime = time
-    manager.broadcast({ type: 'seek', time })
+    manager.broadcast({ type: 'seek', time, sentAt: Date.now() })
   }, [])
 
   const nextTrack = useCallback(() => {
@@ -1017,6 +1037,7 @@ export function usePeerShare() {
         currentTrackIndex: updated.currentTrackIndex,
         currentTime: 0,
         playlist: updated.playlist,
+        sentAt: Date.now(),
       })
     } else {
       const updated: RoomState = { ...state.room, isPlaying: false, currentTime: 0 }
@@ -1033,7 +1054,7 @@ export function usePeerShare() {
     const audio = audioRef.current
     if (audio && audio.currentTime > 3) {
       audio.currentTime = 0
-      manager.broadcast({ type: 'seek', time: 0 })
+      manager.broadcast({ type: 'seek', time: 0, sentAt: Date.now() })
     } else if (state.room.currentTrackIndex > 0) {
       const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex - 1, currentTime: 0 }
       setRoom(updated)
@@ -1042,6 +1063,7 @@ export function usePeerShare() {
         currentTrackIndex: updated.currentTrackIndex,
         currentTime: 0,
         playlist: updated.playlist,
+        sentAt: Date.now(),
       })
     }
   }, [setRoom])
@@ -1160,6 +1182,9 @@ export function usePeerShare() {
         // (so detection isn't affected by the noise gate).
 
         const procCtx = new AudioContext()
+        // Resume in case the user gesture context was consumed by the await above.
+        // If suspended, the entire processing chain is silent (no audio sent to peers).
+        procCtx.resume().catch(() => {})
         const procSource = procCtx.createMediaStreamSource(rawStream)
 
         // 1) High-pass filter: removes AC hum (~50/60Hz), wind noise, low rumble
@@ -1251,6 +1276,8 @@ export function usePeerShare() {
 
         // ── Speaking detection (on raw stream, independent of noise gate) ──
         const analysisCtx = new AudioContext()
+        // Resume for reliable speaking detection (may be suspended after async getUserMedia).
+        analysisCtx.resume().catch(() => {})
         const analysisSource = analysisCtx.createMediaStreamSource(rawStream)
         const analyser = analysisCtx.createAnalyser()
         analyser.fftSize = 512
