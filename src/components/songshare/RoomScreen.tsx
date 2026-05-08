@@ -50,9 +50,12 @@ export function RoomScreen({
   const { room } = useSongShareStore()
   const isPlaying = room?.isPlaying ?? false
   const users = room?.users ?? []
+  const currentTrack = room && room.currentTrackIndex >= 0
+    ? room.playlist[room.currentTrackIndex]
+    : null
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950">
+    <div className="h-dvh flex flex-col bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950">
       {/* Header */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-zinc-800/50 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-40">
         <div className="flex items-center gap-2">
@@ -60,6 +63,25 @@ export function RoomScreen({
             <Headphones className="w-4 h-4 text-white" />
           </div>
           <span className="text-sm font-semibold text-white hidden sm:inline">SongShare</span>
+        </div>
+
+        {/* Room info - mobile: show room name + users */}
+        <div className="flex lg:hidden items-center gap-2">
+          <div className="flex -space-x-1.5">
+            {users.slice(0, 3).map((user) => (
+              <div
+                key={user.id}
+                className="w-5 h-5 rounded-full bg-zinc-800 border border-zinc-900 flex items-center justify-center"
+              >
+                <span className="text-[7px] text-zinc-400 font-medium">
+                  {user.username.substring(0, 2).toUpperCase()}
+                </span>
+              </div>
+            ))}
+          </div>
+          <span className="text-[11px] text-zinc-500">
+            {users.length} online
+          </span>
         </div>
 
         {/* Chat, Voice & Lyrics toggles */}
@@ -133,18 +155,42 @@ export function RoomScreen({
               </div>
             </div>
 
-            {/* Mobile layout: playlist on top, player at bottom */}
+            {/* Mobile layout: Player at top, Playlist below */}
             <div className="lg:hidden flex flex-col flex-1 overflow-hidden">
-              <div className="flex-1 overflow-hidden relative">
-                <Playlist
-                  onAddTrack={onAddTrack}
-                  onRemoveTrack={onRemoveTrack}
-                  isDragOver={isDragOver}
-                  setIsDragOver={setIsDragOver}
-                />
-              </div>
+              {/* Mobile player section - the hero area */}
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+                className="flex-shrink-0 px-5 pt-5 pb-4 bg-gradient-to-b from-zinc-950 to-zinc-900/50"
+              >
+                {/* Album art / Visual indicator */}
+                <div className="flex justify-center mb-5">
+                  <motion.div
+                    animate={{
+                      boxShadow: isPlaying
+                        ? '0 0 40px rgba(244, 63, 94, 0.12), 0 0 80px rgba(244, 63, 94, 0.04)'
+                        : '0 0 0px rgba(244, 63, 94, 0)',
+                    }}
+                    transition={{ duration: 1 }}
+                    className="w-36 h-36 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/40 flex items-center justify-center"
+                  >
+                    <motion.div
+                      animate={{
+                        rotate: isPlaying ? 360 : 0,
+                      }}
+                      transition={{
+                        duration: 8,
+                        repeat: Infinity,
+                        ease: 'linear',
+                      }}
+                    >
+                      <Headphones className="w-14 h-14 text-zinc-700" />
+                    </motion.div>
+                  </motion.div>
+                </div>
 
-              <div className="border-t border-zinc-800/50 bg-zinc-950/90 backdrop-blur-sm p-3">
+                {/* Mobile player controls */}
                 <MusicPlayer
                   audioRef={audioRef}
                   onPlay={onPlay}
@@ -153,7 +199,23 @@ export function RoomScreen({
                   onNext={onNext}
                   onPrevious={onPrevious}
                 />
+              </motion.div>
+
+              {/* Visual divider */}
+              <div className="flex-shrink-0 h-px bg-gradient-to-r from-transparent via-zinc-700/50 to-transparent" />
+
+              {/* Mobile playlist - scrollable below player */}
+              <div className="flex-1 overflow-hidden">
+                <Playlist
+                  onAddTrack={onAddTrack}
+                  onRemoveTrack={onRemoveTrack}
+                  isDragOver={isDragOver}
+                  setIsDragOver={setIsDragOver}
+                />
               </div>
+
+              {/* Safe area bottom padding for notched phones */}
+              <div className="flex-shrink-0 h-[env(safe-area-inset-bottom)]" />
             </div>
           </div>
         </div>
@@ -167,35 +229,6 @@ export function RoomScreen({
         >
           <UserList onLeave={onLeave} />
         </motion.div>
-      </div>
-
-      {/* Mobile bottom bar - simplified users */}
-      <div className="lg:hidden border-t border-zinc-800/50 bg-zinc-950/90 backdrop-blur-sm px-4 py-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <div className="flex -space-x-2">
-              {users.slice(0, 3).map((user) => (
-                <div
-                  key={user.id}
-                  className="w-6 h-6 rounded-full bg-zinc-800 border-2 border-zinc-900 flex items-center justify-center"
-                >
-                  <span className="text-[8px] text-zinc-400 font-medium">
-                    {user.username.substring(0, 2).toUpperCase()}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <span className="text-xs text-zinc-500">
-              {users.length} online
-            </span>
-          </div>
-          <button
-            onClick={onLeave}
-            className="text-xs text-zinc-500 hover:text-red-400 transition-colors"
-          >
-            Sair
-          </button>
-        </div>
       </div>
     </div>
   )
