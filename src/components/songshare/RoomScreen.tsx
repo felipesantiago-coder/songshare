@@ -108,12 +108,12 @@ export function RoomScreen({
           )}
         </button>
 
-        {/* Leave button - always visible */}
+        {/* Leave button - mobile only (desktop has one in the sidebar via UserList) */}
         <Button
           variant="ghost"
           size="icon"
           onClick={onLeave}
-          className="text-zinc-500 hover:text-red-400 hover:bg-red-500/10 h-9 w-9 rounded-full mr-1"
+          className="lg:hidden text-zinc-500 hover:text-red-400 hover:bg-red-500/10 h-9 w-9 rounded-full mr-1"
           title="Sair da sala"
         >
           <LogOut className="w-4 h-4" />

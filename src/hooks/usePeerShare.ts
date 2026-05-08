@@ -226,62 +226,93 @@ export function usePeerShare() {
 
       const handleRemoteStream = (remoteStream: MediaStream) => {
         if (streamProcessed) return
+        // Defensive: PeerJS may emit 'stream' with undefined if evt.streams[0] is empty
+        if (!remoteStream || !(remoteStream instanceof MediaStream)) {
+          console.warn('[SongShare] incoming-call: received invalid stream, ignoring')
+          return
+        }
         streamProcessed = true
         processIncomingStream(mediaCall.peer, remoteStream)
       }
 
-      // Method 1: Standard PeerJS 'stream' event
+      // Method 1: Standard PeerJS 'stream' event (fires from PeerJS internal ontrack handler)
       mediaCall.on('stream', handleRemoteStream)
 
       // Method 2: FALLBACK — listen for 'track' event on the underlying RTCPeerConnection.
-      // In some PeerJS versions / browser configurations, the 'stream' event may not fire,
-      // or event.streams[0] may be undefined (when addTrack was used without a stream).
-      // The native 'track' event on RTCPeerConnection is the most reliable way to get
-      // the remote audio track.
-      const pc = (mediaCall as any).peerConnection as RTCPeerConnection | undefined
+      // CRITICAL FIX: In PeerJS v1.5.5, `connection.peerConnection` is NULL at the time
+      // the 'call' event fires. The RTCPeerConnection is only created INSIDE `answer()`
+      // → `startConnection()` → `_startPeerConnection()` (lines 733-753 of bundler.mjs).
+      // So checking `pc` BEFORE answer() returns undefined, and the track listener is
+      // never registered. The fix: add the track listener AFTER calling answer(), when
+      // peerConnection is guaranteed to exist.
+      //
+      // Additionally, PeerJS's internal ontrack handler uses `evt.streams[0]` which can
+      // be undefined in some WebRTC implementations. When that happens, PeerJS emits
+      // 'stream' with undefined. Our track listener handles this by wrapping the bare
+      // track in a new MediaStream.
       let trackHandler: ((ev: Event) => void) | null = null
-      if (pc) {
-        trackHandler = (ev: Event) => {
-          if (streamProcessed) return
-          const trackEvent = ev as RTCTrackEvent
-          if (trackEvent.streams && trackEvent.streams.length > 0) {
-            handleRemoteStream(trackEvent.streams[0])
-          } else if (trackEvent.track && trackEvent.track.kind === 'audio') {
-            // Track arrived without a stream (some PeerJS versions) — wrap it
-            handleRemoteStream(new MediaStream([trackEvent.track]))
+
+      // Create silent answer stream (reused across all incoming calls)
+      if (!silentAnswerStreamRef.current) {
+        const ctx = new AudioContext()
+        ctx.resume().catch(() => {})
+        silentAnswerStreamRef.current = ctx.createMediaStreamDestination().stream
+        silentAnswerCtxRef.current = ctx
+      }
+
+      // Answer the call — this creates the RTCPeerConnection internally
+      mediaCall.answer(silentAnswerStreamRef.current)
+
+      // NOW peerConnection is available — register our track fallback listener
+      // Using setTimeout(0) to ensure answer()'s synchronous code has completed
+      // and the peerConnection is fully set up
+      setTimeout(() => {
+        const pc = (mediaCall as any).peerConnection as RTCPeerConnection | undefined
+        if (pc) {
+          trackHandler = (ev: Event) => {
+            if (streamProcessed) return
+            const trackEvent = ev as RTCTrackEvent
+            if (trackEvent.streams && trackEvent.streams.length > 0) {
+              handleRemoteStream(trackEvent.streams[0])
+            } else if (trackEvent.track && trackEvent.track.kind === 'audio') {
+              // Track arrived without a stream association — wrap in new MediaStream
+              handleRemoteStream(new MediaStream([trackEvent.track]))
+            }
           }
+          pc.addEventListener('track', trackHandler)
+
+          // Also monitor ICE connection state for debugging
+          pc.oniceconnectionstatechange = () => {
+            const state = pc.iceConnectionState
+            if (state === 'failed' || state === 'disconnected') {
+              console.warn('[SongShare] ICE', state, 'for voice call from', mediaCall.peer)
+            }
+          }
+        } else {
+          console.warn('[SongShare] peerConnection still undefined after answer() for', mediaCall.peer)
         }
-        pc.addEventListener('track', trackHandler)
+      }, 0)
+
+      const cleanupTrackHandler = () => {
+        if (trackHandler) {
+          const pc = (mediaCall as any).peerConnection as RTCPeerConnection | undefined
+          if (pc) pc.removeEventListener('track', trackHandler)
+          trackHandler = null
+        }
       }
 
       mediaCall.on('close', () => {
-        if (trackHandler && pc) pc.removeEventListener('track', trackHandler)
+        cleanupTrackHandler()
         removeVoiceStream(mediaCall.peer)
         stopSpeakingDetection(mediaCall.peer)
       })
 
       mediaCall.on('error', (err) => {
         console.error('[SongShare] Incoming call error:', err)
-        if (trackHandler && pc) pc.removeEventListener('track', trackHandler)
+        cleanupTrackHandler()
         removeVoiceStream(mediaCall.peer)
         stopSpeakingDetection(mediaCall.peer)
       })
-
-      // CRITICAL: answer() MUST receive a stream. PeerJS v1.5.5 only adds audio tracks
-      // to the PeerConnection when options._stream is provided (line 737 of bundler.mjs).
-      // Without a stream, no tracks are added, the SDP answer omits m=audio, and the
-      // remote audio is rejected. We use a silent stream so the answer includes
-      // m=audio with a recvonly transceiver, allowing us to receive remote audio.
-      if (!silentAnswerStreamRef.current) {
-        const ctx = new AudioContext()
-        // Resume immediately — even though this is outside a user gesture,
-        // the user has previously interacted with the page (joined room, clicked mic).
-        // On Chrome this succeeds; on Safari it may need the user-interaction fallback.
-        ctx.resume().catch(() => {})
-        silentAnswerStreamRef.current = ctx.createMediaStreamDestination().stream
-        silentAnswerCtxRef.current = ctx
-      }
-      mediaCall.answer(silentAnswerStreamRef.current)
     })
 
     /* ─── Event: media call closed ─────────────── */
@@ -911,7 +942,27 @@ export function usePeerShare() {
 
     /* ─── Conexão / desconexão do signaling ─────── */
 
-    const unsubConnected = manager.on('connected', () => setIsConnected(true))
+    const unsubConnected = manager.on('connected', () => {
+      setIsConnected(true)
+      // Re-establish voice calls when signaling reconnects.
+      // The signaling drop may have caused media calls to fail silently.
+      // If mic is active, re-call all peers to restore voice connectivity.
+      const store = useSongShareStore.getState()
+      if (store.isMicActive && noiseProcessorRef.current) {
+        const procStream = noiseProcessorRef.current.processedStream
+        if (procStream) {
+          const peerIds = store.allPeerIds
+          peerIds.forEach((peerId) => {
+            if (peerId !== manager.getMyPeerId()) {
+              // hangupMedia first to clear stale entries, then re-call
+              manager.hangupMedia(peerId)
+              manager.callWithStream(peerId, procStream)
+            }
+          })
+          console.log('[SongShare] Signaling reconnected, re-established voice calls to', peerIds.length - 1, 'peers')
+        }
+      }
+    })
     const unsubDisconnected = manager.on('disconnected', () => setIsConnected(false))
 
     /* ─── Cleanup ───────────────────────────────── */
@@ -1083,6 +1134,38 @@ export function usePeerShare() {
       }
     }
   }, [room?.currentTrackIndex, room?.isPlaying])
+
+  /* ── Voice call health check ────────────────────── */
+  // Periodically verify that voice calls are alive. If mic is active but
+  // mediaCalls are missing for known peers (e.g., due to ICE failure or
+  // signaling drop), re-initiate the calls.
+  useEffect(() => {
+    const manager = managerRef.current
+    if (!manager) return
+
+    const interval = setInterval(() => {
+      const store = useSongShareStore.getState()
+      if (!store.isMicActive || !noiseProcessorRef.current) return
+      if (!store.room) return
+
+      const procStream = noiseProcessorRef.current.processedStream
+      if (!procStream) return
+
+      // Check each known peer — if we don't have a media call for them, try to establish one
+      store.allPeerIds.forEach((peerId) => {
+        if (peerId === manager.getMyPeerId()) return
+        if (!manager.mediaCalls.has(peerId)) {
+          // No active media call for this peer — try to establish
+          const call = manager.callWithStream(peerId, procStream)
+          if (call) {
+            console.log('[SongShare] Voice health check: re-established call to', peerId)
+          }
+        }
+      })
+    }, 10000) // Check every 10 seconds
+
+    return () => clearInterval(interval)
+  }, [room?.hostId])
 
   /* ── RTT measurement (listener pings host) ────── */
 
@@ -1485,8 +1568,26 @@ export function usePeerShare() {
           },
         })
 
-        // Ensure the context is running before setting up the processing chain
+        // Ensure the context is running before setting up the processing chain.
+        // In some browsers, resume() resolves immediately even if the context
+        // hasn't transitioned to 'running' yet. Verify the actual state.
         await procCtx.resume()
+        if (procCtx.state !== 'running') {
+          // Retry with a longer wait — some browsers need extra time
+          await new Promise<void>((resolve) => {
+            const check = () => {
+              if (procCtx.state === 'running') { resolve(); return }
+              procCtx.resume().then(() => {
+                if (procCtx.state === 'running') resolve()
+                else setTimeout(check, 100)
+              }).catch(() => setTimeout(check, 100))
+            }
+            setTimeout(check, 100)
+            // Timeout after 3 seconds — proceed anyway
+            setTimeout(resolve, 3000)
+          })
+        }
+        console.log('[SongShare] procCtx state after resume:', procCtx.state)
         const procSource = procCtx.createMediaStreamSource(rawStream)
 
         // 1) High-pass filter: removes AC hum (~50/60Hz), wind noise, low rumble

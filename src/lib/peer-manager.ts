@@ -91,9 +91,18 @@ export class PeerManager {
         debug: 0,
         config: {
           iceServers: [
+            // STUN servers — discover public IP/port for NAT traversal
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            // TURN servers — relay traffic when P2P fails (symmetric NAT, firewalls).
+            // These free servers are provided by Open Relay Project for development.
+            // For production, replace with your own TURN server (Twilio, Xirsys, Metered, etc.)
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
           ],
         },
       })
@@ -453,6 +462,12 @@ export class PeerManager {
   callWithStream(peerId: string, stream: MediaStream): MediaConnection | null {
     if (!this.peer || this.peer.destroyed) return null
 
+    // Don't call if signaling server is disconnected — the call signal would be lost
+    if (this.peer.disconnected) {
+      console.warn('[SongShare] callWithStream: peer disconnected from signaling, cannot call', peerId)
+      return null
+    }
+
     // Não chamar a si mesmo
     if (peerId === this.peer?.id) return null
 
@@ -462,7 +477,10 @@ export class PeerManager {
 
     try {
       const call = this.peer.call(peerId, stream)
-      if (!call) return null
+      if (!call) {
+        console.warn('[SongShare] callWithStream: peer.call returned null for', peerId)
+        return null
+      }
 
       this.mediaCalls.set(peerId, call)
 
