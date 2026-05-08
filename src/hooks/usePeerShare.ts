@@ -49,6 +49,8 @@ export function usePeerShare() {
   const setVoiceStreamSpeaking = useSongShareStore((s) => s.setVoiceStreamSpeaking)
   const clearVoiceStreams = useSongShareStore((s) => s.clearVoiceStreams)
   const setAllPeerIds = useSongShareStore((s) => s.setAllPeerIds)
+  const setUserMicState = useSongShareStore((s) => s.setUserMicState)
+  const removeUserMicState = useSongShareStore((s) => s.removeUserMicState)
 
   // ── Voice helper: detect speaking via AnalyserNode ─────
   const startSpeakingDetection = useCallback((peerId: string, stream: MediaStream) => {
@@ -121,9 +123,7 @@ export function usePeerShare() {
 
     /* ─── Event: incoming media call (voice) ──── */
     const unsubIncomingCall = manager.on('incoming-call', (mediaCall: MediaConnection) => {
-      // Auto-answer all incoming voice calls
-      mediaCall.answer()
-
+      // Attach stream listener BEFORE answering to avoid race condition
       mediaCall.on('stream', (remoteStream) => {
         processIncomingStream(mediaCall.peer, remoteStream)
       })
@@ -138,6 +138,9 @@ export function usePeerShare() {
         removeVoiceStream(mediaCall.peer)
         stopSpeakingDetection(mediaCall.peer)
       })
+
+      // Auto-answer all incoming voice calls
+      mediaCall.answer()
     })
 
     /* ─── Event: media call closed ─────────────── */
@@ -178,7 +181,13 @@ export function usePeerShare() {
       // Notify about new peer for voice mesh
       setAllPeerIds(allPeers)
 
-      // Notificar demais ouvintes about new peer (include user with peerId)
+      // If host mic is active, call the new peer directly
+      const hostStore = useSongShareStore.getState()
+      if (hostStore.isMicActive && hostStore.micStream) {
+        manager.callWithStream(data.peerId, hostStore.micStream)
+      }
+
+      // Notify existing listeners about new peer
       manager.broadcast(
         { type: 'user-joined', user, room: { users: updated.users }, newPeerId: data.peerId },
         data.peerId,
@@ -233,7 +242,13 @@ export function usePeerShare() {
 
     /* ─── Event: voice-state-update (someone toggled mic) ── */
     const unsubVoiceState = manager.on('voice-state-update', (data: { userId: string; isMicActive: boolean; isMicMuted: boolean }) => {
-      // Just informational for UI — the actual media call is separate
+      // Update local mic state tracking for this user
+      setUserMicState(data.userId, { isMicActive: data.isMicActive, isMicMuted: data.isMicMuted })
+
+      // If host, relay to all other listeners so everyone knows
+      if (manager.isHost) {
+        manager.broadcast({ type: 'voice-state-update', ...data })
+      }
     })
 
     /* ─── Event: host-disconnected ──────────────── */
@@ -299,6 +314,9 @@ export function usePeerShare() {
       // Update peer IDs
       const currentPeerIds = state.allPeerIds.filter((pid) => pid !== data.peerId)
       setAllPeerIds(currentPeerIds)
+
+      // Clean up mic state for this user
+      removeUserMicState(data.userId)
 
       manager.broadcast({ type: 'user-left', room: { users: updated.users } })
       manager.broadcast(sysMsg)
@@ -513,10 +531,9 @@ export function usePeerShare() {
     if (!audio) return
 
     const onTimeUpdate = () => {
-      // Atualizar room.currentTime silenciosamente para o host
-      if (room && room.hostId === useSongShareStore.getState().socket?.id) {
-        useSongShareStore.getState().updateRoom({ currentTime: audio.currentTime })
-      }
+      // Update room.currentTime for ALL users (host + listeners)
+      // This ensures the progress bar stays smooth
+      useSongShareStore.getState().updateRoom({ currentTime: audio.currentTime })
     }
 
     const onEnded = () => {
@@ -918,7 +935,7 @@ export function usePeerShare() {
         alert('Não foi possível acessar o microfone. Verifique as permissões.')
       }
     }
-  }, [setMicStream, setMicActive, setMicMuted])
+  }, [setMicStream, setMicActive, setMicMuted, setUserMicState])
 
   const toggleMute = useCallback(() => {
     const store = useSongShareStore.getState()

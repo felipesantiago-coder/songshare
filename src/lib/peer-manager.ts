@@ -229,9 +229,11 @@ export class PeerManager {
           this.emit('user-left-request', { ...data, peerId: senderPeerId })
         }
         break
-      default:
-        // Encaminhar todos os outros tipos para o hook
-        this.emit(data.type, data)
+      default: {
+        // Strip event type to prevent polluting room state
+        const { type: _eventType, ...payload } = data
+        this.emit(_eventType, payload)
+      }
     }
   }
 

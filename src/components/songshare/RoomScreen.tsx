@@ -56,6 +56,9 @@ export function RoomScreen({
 
   return (
     <div className="h-dvh flex flex-col bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950">
+      {/* Single global audio element - avoids duplicate ref conflicts */}
+      <audio ref={audioRef} preload="auto" className="hidden" />
+
       {/* Header */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-zinc-800/50 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-40">
         <div className="flex items-center gap-2">
@@ -162,10 +165,10 @@ export function RoomScreen({
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3 }}
-                className="flex-shrink-0 px-5 pt-5 pb-4 bg-gradient-to-b from-zinc-950 to-zinc-900/50"
+                className="flex-shrink-0 px-5 pt-4 pb-3 bg-gradient-to-b from-zinc-950 to-zinc-900/50"
               >
                 {/* Album art / Visual indicator */}
-                <div className="flex justify-center mb-5">
+                <div className="flex justify-center mb-4">
                   <motion.div
                     animate={{
                       boxShadow: isPlaying
@@ -173,7 +176,7 @@ export function RoomScreen({
                         : '0 0 0px rgba(244, 63, 94, 0)',
                     }}
                     transition={{ duration: 1 }}
-                    className="w-36 h-36 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/40 flex items-center justify-center"
+                    className="w-40 h-40 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/40 flex items-center justify-center"
                   >
                     <motion.div
                       animate={{
@@ -185,7 +188,7 @@ export function RoomScreen({
                         ease: 'linear',
                       }}
                     >
-                      <Headphones className="w-14 h-14 text-zinc-700" />
+                      <Headphones className="w-16 h-16 text-zinc-700" />
                     </motion.div>
                   </motion.div>
                 </div>
