@@ -42,7 +42,7 @@ export function LyricsPanel({ onUpdateLyrics }: LyricsPanelProps) {
   }
 
   return (
-    <>
+    <div className="relative">
       {/* Toggle button */}
       <Button
         variant="ghost"
@@ -57,15 +57,15 @@ export function LyricsPanel({ onUpdateLyrics }: LyricsPanelProps) {
         )}
       </Button>
 
-      {/* Lyrics panel */}
+      {/* Lyrics panel - positioned below the button */}
       <AnimatePresence>
         {showLyrics && (
           <motion.div
-            initial={{ opacity: 0, y: 10, scale: 0.95 }}
+            initial={{ opacity: 0, y: -10, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.95 }}
+            exit={{ opacity: 0, y: -10, scale: 0.95 }}
             transition={{ duration: 0.2 }}
-            className="absolute bottom-full right-0 mb-2 w-80 sm:w-96 h-[28rem] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl shadow-black/40 overflow-hidden flex flex-col z-50"
+            className="absolute top-full right-0 mt-2 left-0 sm:left-auto w-[calc(100vw-2rem)] sm:w-96 h-[55vh] sm:h-[28rem] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl shadow-black/40 overflow-hidden flex flex-col z-50"
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800/50">
@@ -175,6 +175,6 @@ export function LyricsPanel({ onUpdateLyrics }: LyricsPanelProps) {
           </motion.div>
         )}
       </AnimatePresence>
-    </>
+    </div>
   )
 }
