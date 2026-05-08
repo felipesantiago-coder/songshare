@@ -75,7 +75,7 @@ export function LandingScreen({ onCreateRoom, onJoinRoom, isConnected }: Landing
           </div>
           <h1 className="text-4xl font-bold text-white tracking-tight">SongShare</h1>
           <p className="text-zinc-400 mt-2 text-sm">
-            Ouca musica com seus amigos, em sincronia
+            Ouça música com seus amigos, em sincronia
           </p>
         </motion.div>
 
@@ -237,7 +237,7 @@ export function LandingScreen({ onCreateRoom, onJoinRoom, isConnected }: Landing
         </Card>
 
         <p className="text-center text-xs text-zinc-600 mt-6">
-          SongShare v1.0 &mdash; Musica juntos, em qualquer lugar
+          SongShare v1.0 &mdash; Música juntos, em qualquer lugar
         </p>
       </motion.div>
     </div>
