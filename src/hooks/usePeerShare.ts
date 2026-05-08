@@ -66,6 +66,19 @@ export function usePeerShare() {
   // so we can receive the remote peer's audio even when our mic is off
   const silentAnswerStreamRef = useRef<MediaStream | null>(null)
   const silentAnswerCtxRef = useRef<AudioContext | null>(null)
+  // Stores cleanup functions for per-peer user-interaction listeners (AudioContext resume)
+  const peerAudioCleanupRef = useRef<Map<string, () => void>>(new Map())
+  // Pending play tracking — when a 'play' event arrives but audio data isn't available yet,
+  // store the host's time and receipt timestamp so the track-data-chunk completion handler
+  // can calculate the correct start position when data finally arrives.
+  const pendingPlayRef = useRef<{ hostTime: number; receivedAt: number } | null>(null)
+  // Threshold below which we don't apply latency compensation.
+  // When the host starts from near the beginning of a track (currentTime < threshold),
+  // the transit time represents network delay — not actual playback progress.
+  // Starting from the raw currentTime avoids skipping the song intro.
+  // The time-sync mechanism (every 1.5s) will correct any small residual drift
+  // via smooth playbackRate adjustment — no jarring hard-seeks.
+  const NO_COMPENSATE_THRESHOLD = 1.0 // seconds
 
   // ── Zustand selectors ────────────────────────────
   const room = useSongShareStore((s) => s.room)
@@ -106,6 +119,12 @@ export function usePeerShare() {
       clearInterval(interval)
       speakingIntervalsRef.current.delete(peerId)
     }
+    // Also clean up per-peer AudioContext resume interaction listeners
+    const cleanup = peerAudioCleanupRef.current.get(peerId)
+    if (cleanup) {
+      cleanup()
+      peerAudioCleanupRef.current.delete(peerId)
+    }
   }, [])
 
   // ── Voice helper: process incoming voice stream ───────
@@ -117,48 +136,86 @@ export function usePeerShare() {
     // Don't add if already exists
     if (store.voiceStreams.has(peerId)) return
 
-    // Single shared AudioContext for this peer
-    const audioContext = new AudioContext()
-    // CRITICAL: AudioContext created outside a user gesture (e.g. incoming call)
-    // starts in 'suspended' state in Chrome/Safari. Must resume to play audio.
-    audioContext.resume().catch((e) => console.warn('[SongShare] AudioContext resume failed:', e))
-    const source = audioContext.createMediaStreamSource(remoteStream)
-
-    // Output chain: source → gainNode → speakers
-    const gainNode = audioContext.createGain()
-    gainNode.gain.value = 1.0 // default volume
-    source.connect(gainNode)
-    gainNode.connect(audioContext.destination)
-
-    // Analysis chain: source → analyser (NOT connected to output — just reads data)
-    const analyser = audioContext.createAnalyser()
-    analyser.fftSize = 512
-    analyser.smoothingTimeConstant = 0.8
-    source.connect(analyser)
-
-    const dataArray = new Uint8Array(analyser.frequencyBinCount)
-
-    const interval = setInterval(() => {
-      analyser.getByteFrequencyData(dataArray)
-      let sum = 0
-      for (let i = 0; i < dataArray.length; i++) {
-        sum += dataArray[i]
+    try {
+      // Validate: stream must have at least one audio track
+      const audioTracks = remoteStream.getAudioTracks()
+      if (audioTracks.length === 0) {
+        console.warn('[SongShare] processIncomingStream: no audio tracks in stream from', peerId)
+        return
       }
-      const average = sum / dataArray.length / 255
-      setVoiceStreamSpeaking(peerId, average > SPEAKING_THRESHOLD)
-    }, 150)
 
-    speakingIntervalsRef.current.set(peerId, interval)
+      // Single shared AudioContext for this peer
+      const audioContext = new AudioContext()
 
-    const info: VoiceStreamInfo = {
-      stream: remoteStream,
-      audioContext,
-      gainNode,
-      volume: 1.0,
-      isSpeaking: false,
+      // ROBUST RESUME STRATEGY — AudioContext created outside user gesture
+      // starts 'suspended' in Chrome 71+/Safari/iOS. Three-pronged approach:
+      // 1. Immediate resume attempt
+      // 2. Periodic retry every 500ms for 5 seconds
+      // 3. User-interaction listener as last resort
+      const tryResume = () => {
+        if (audioContext.state === 'running') return
+        audioContext.resume().catch(() => {})
+      }
+      tryResume()
+      const resumeInterval = setInterval(() => {
+        if (audioContext.state === 'running') clearInterval(resumeInterval)
+        else tryResume()
+      }, 500)
+      setTimeout(() => clearInterval(resumeInterval), 5000)
+
+      // Register user-interaction listeners that retry resume on any click/touch/keypress.
+      // Stored in peerAudioCleanupRef so stopSpeakingDetection can remove them.
+      const resumeOnInteraction = () => tryResume()
+      document.addEventListener('click', resumeOnInteraction, { passive: true })
+      document.addEventListener('touchstart', resumeOnInteraction, { passive: true })
+      document.addEventListener('keydown', resumeOnInteraction, { passive: true })
+      peerAudioCleanupRef.current.set(peerId, () => {
+        clearInterval(resumeInterval)
+        document.removeEventListener('click', resumeOnInteraction)
+        document.removeEventListener('touchstart', resumeOnInteraction)
+        document.removeEventListener('keydown', resumeOnInteraction)
+      })
+
+      const source = audioContext.createMediaStreamSource(remoteStream)
+
+      // Output chain: source → gainNode → speakers
+      const gainNode = audioContext.createGain()
+      gainNode.gain.value = 1.0 // default volume
+      source.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+
+      // Analysis chain: source → analyser (NOT connected to output — just reads data)
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 512
+      analyser.smoothingTimeConstant = 0.8
+      source.connect(analyser)
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+
+      const interval = setInterval(() => {
+        analyser.getByteFrequencyData(dataArray)
+        let sum = 0
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i]
+        }
+        const average = sum / dataArray.length / 255
+        setVoiceStreamSpeaking(peerId, average > SPEAKING_THRESHOLD)
+      }, 150)
+
+      speakingIntervalsRef.current.set(peerId, interval)
+
+      const info: VoiceStreamInfo = {
+        stream: remoteStream,
+        audioContext,
+        gainNode,
+        volume: 1.0,
+        isSpeaking: false,
+      }
+
+      store.addVoiceStream(peerId, info)
+    } catch (err) {
+      console.error('[SongShare] processIncomingStream error for', peerId, ':', err)
     }
-
-    store.addVoiceStream(peerId, info)
   }, [setVoiceStreamSpeaking])
 
   // ── Init PeerManager + event handlers ────────────
@@ -172,18 +229,47 @@ export function usePeerShare() {
 
     /* ─── Event: incoming media call (voice) ──── */
     const unsubIncomingCall = manager.on('incoming-call', (mediaCall: MediaConnection) => {
-      // Attach stream listener BEFORE answering to avoid race condition
-      mediaCall.on('stream', (remoteStream) => {
+      let streamProcessed = false
+
+      const handleRemoteStream = (remoteStream: MediaStream) => {
+        if (streamProcessed) return
+        streamProcessed = true
         processIncomingStream(mediaCall.peer, remoteStream)
-      })
+      }
+
+      // Method 1: Standard PeerJS 'stream' event
+      mediaCall.on('stream', handleRemoteStream)
+
+      // Method 2: FALLBACK — listen for 'track' event on the underlying RTCPeerConnection.
+      // In some PeerJS versions / browser configurations, the 'stream' event may not fire,
+      // or event.streams[0] may be undefined (when addTrack was used without a stream).
+      // The native 'track' event on RTCPeerConnection is the most reliable way to get
+      // the remote audio track.
+      const pc = (mediaCall as any).peerConnection as RTCPeerConnection | undefined
+      let trackHandler: ((ev: Event) => void) | null = null
+      if (pc) {
+        trackHandler = (ev: Event) => {
+          if (streamProcessed) return
+          const trackEvent = ev as RTCTrackEvent
+          if (trackEvent.streams && trackEvent.streams.length > 0) {
+            handleRemoteStream(trackEvent.streams[0])
+          } else if (trackEvent.track && trackEvent.track.kind === 'audio') {
+            // Track arrived without a stream (some PeerJS versions) — wrap it
+            handleRemoteStream(new MediaStream([trackEvent.track]))
+          }
+        }
+        pc.addEventListener('track', trackHandler)
+      }
 
       mediaCall.on('close', () => {
+        if (trackHandler && pc) pc.removeEventListener('track', trackHandler)
         removeVoiceStream(mediaCall.peer)
         stopSpeakingDetection(mediaCall.peer)
       })
 
       mediaCall.on('error', (err) => {
         console.error('[SongShare] Incoming call error:', err)
+        if (trackHandler && pc) pc.removeEventListener('track', trackHandler)
         removeVoiceStream(mediaCall.peer)
         stopSpeakingDetection(mediaCall.peer)
       })
@@ -195,6 +281,10 @@ export function usePeerShare() {
       // m=audio with a recvonly transceiver, allowing us to receive remote audio.
       if (!silentAnswerStreamRef.current) {
         const ctx = new AudioContext()
+        // Resume immediately — even though this is outside a user gesture,
+        // the user has previously interacted with the page (joined room, clicked mic).
+        // On Chrome this succeeds; on Safari it may need the user-interaction fallback.
+        ctx.resume().catch(() => {})
         silentAnswerStreamRef.current = ctx.createMediaStreamDestination().stream
         silentAnswerCtxRef.current = ctx
       }
@@ -531,34 +621,61 @@ export function usePeerShare() {
     /* ─── Eventos de reprodução (ouvintes recebem) ─ */
 
     const unsubPlay = manager.on('play', (data: { currentTime: number; sentAt?: number }) => {
-      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
-      updateRoom({ isPlaying: true, currentTime: compensated })
+      // Don't compensate when starting from the beginning of a track (< 1s).
+      // The host also started from ~0, so transit time is network delay, not playback progress.
+      // Starting from the raw time avoids skipping the song intro.
+      const compensated = data.currentTime < NO_COMPENSATE_THRESHOLD
+        ? data.currentTime
+        : compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+
+      // Clear any previous pending play intent
+      pendingPlayRef.current = null
+
+      // Check if audio data for the current track is actually available
+      const store = useSongShareStore.getState()
+      const currentTrack = store.room?.playlist[store.room.currentTrackIndex]
+      const trackUrl = currentTrack ? store.audioCache.get(currentTrack.id) : null
       const audio = audioRef.current
-      if (audio) {
-        // Always seek to host's compensated position to eliminate accumulated drift
+
+      if (trackUrl && audio && audio.src === trackUrl) {
+        // Audio data is loaded and matches current track — play immediately
+        updateRoom({ isPlaying: true, currentTime: compensated })
         audio.currentTime = compensated
-        audio.playbackRate = 1.0 // Reset any drift correction
+        audio.playbackRate = 1.0
         audio.play().catch(() => {})
+      } else {
+        // Audio data NOT available yet — store play intent so the track-data-chunk
+        // completion handler can calculate the correct start position when data arrives.
+        // Don't update currentTime here to prevent stale values.
+        pendingPlayRef.current = { hostTime: data.currentTime, receivedAt: Date.now() }
+        updateRoom({ isPlaying: true, currentTime: compensated })
+        // Don't try to play — audio isn't loaded yet (would fail silently and
+        // leave audio.paused = true, preventing time-sync from running)
       }
     })
 
     const unsubPause = manager.on('pause', (data: { currentTime: number; sentAt?: number }) => {
-      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+      // Don't compensate when paused near the beginning — prevents drift on resume
+      const compensated = data.currentTime < NO_COMPENSATE_THRESHOLD
+        ? data.currentTime
+        : compensateTime(data.currentTime, data.sentAt, latencyRef.current)
       updateRoom({ isPlaying: false, currentTime: compensated })
       if (audioRef.current) {
-        // Seek to host's compensated position before pausing to prevent drift accumulation
         audioRef.current.currentTime = compensated
-        audioRef.current.playbackRate = 1.0 // Reset drift correction
+        audioRef.current.playbackRate = 1.0
         audioRef.current.pause()
       }
     })
 
     const unsubSeek = manager.on('seek', (data: { time: number; sentAt?: number }) => {
-      const compensated = compensateTime(data.time, data.sentAt, latencyRef.current)
+      // Don't compensate when seeking to the beginning — both host and guest should be at 0
+      const compensated = data.time < NO_COMPENSATE_THRESHOLD
+        ? data.time
+        : compensateTime(data.time, data.sentAt, latencyRef.current)
       updateRoom({ currentTime: compensated })
       if (audioRef.current) {
         audioRef.current.currentTime = compensated
-        audioRef.current.playbackRate = 1.0 // Reset drift correction after seek
+        audioRef.current.playbackRate = 1.0
       }
     })
 
@@ -590,7 +707,16 @@ export function usePeerShare() {
     })
 
     const unsubTrackChanged = manager.on('track-changed', (data: { currentTrackIndex: number; currentTime: number; playlist: Track[]; sentAt?: number }) => {
-      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+      // Don't compensate for new tracks starting from the beginning.
+      // track-changed almost always sends currentTime: 0 (new track auto-advance).
+      // Without this fix, guests skip ~0.1-0.3s of every new song.
+      const compensated = data.currentTime < NO_COMPENSATE_THRESHOLD
+        ? data.currentTime
+        : compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+
+      // Clear any pending play intent — track-changed supersedes it
+      pendingPlayRef.current = null
+
       updateRoom({
         currentTrackIndex: data.currentTrackIndex,
         currentTime: compensated,
@@ -680,10 +806,27 @@ export function usePeerShare() {
           if (st.room) {
             const ct = st.room.playlist[st.room.currentTrackIndex]
             if (ct && ct.id === data.trackId && audioRef.current) {
-              audioRef.current.src = url
+              const audio = audioRef.current
+              audio.src = url
               if (st.room.isPlaying) {
-                audioRef.current.currentTime = st.room.currentTime
-                audioRef.current.play().catch(() => {})
+                // Calculate the correct start position:
+                // - If a 'play' event was received earlier but audio wasn't available,
+                //   use pendingPlayRef to estimate where the host currently is
+                //   (hostTime + elapsed time since play was received).
+                // - Otherwise fall back to room.currentTime (set by the last
+                //   play/seek/track-changed event).
+                // This prevents starting from a stale position when data transfer
+                // took time after the play command was issued.
+                let startTime: number
+                if (pendingPlayRef.current) {
+                  const elapsed = (Date.now() - pendingPlayRef.current.receivedAt) / 1000
+                  startTime = pendingPlayRef.current.hostTime + elapsed
+                  pendingPlayRef.current = null
+                } else {
+                  startTime = st.room.currentTime || 0
+                }
+                audio.currentTime = startTime
+                audio.play().catch(() => {})
               }
             }
           }
@@ -776,6 +919,10 @@ export function usePeerShare() {
       // Clean up speaking detection
       speakingIntervalsRef.current.forEach((interval) => clearInterval(interval))
       speakingIntervalsRef.current.clear()
+
+      // Clean up per-peer AudioContext resume interaction listeners
+      peerAudioCleanupRef.current.forEach((cleanup) => cleanup())
+      peerAudioCleanupRef.current.clear()
 
       // Clean up local mic analysis AudioContext
       if (localMicAnalysisRef.current) {
@@ -887,7 +1034,18 @@ export function usePeerShare() {
     if (url && audio.src !== url) {
       audio.src = url
       if (room.isPlaying) {
-        audio.currentTime = room.currentTime || 0
+        // If a play was pending (audio wasn't available when play event arrived),
+        // calculate host's estimated current position instead of using stale room.currentTime.
+        // Otherwise use room.currentTime which was set by the most recent play/seek event.
+        let startTime: number
+        if (pendingPlayRef.current) {
+          const elapsed = (Date.now() - pendingPlayRef.current.receivedAt) / 1000
+          startTime = pendingPlayRef.current.hostTime + elapsed
+          pendingPlayRef.current = null
+        } else {
+          startTime = room.currentTime || 0
+        }
+        audio.currentTime = startTime
         audio.play().catch(() => {})
       }
     }
@@ -1296,6 +1454,8 @@ export function usePeerShare() {
         // Noise gate control loop (runs at ~7Hz — efficient, no audio artifacts)
         const cleanupInterval = setInterval(() => {
           if (!useSongShareStore.getState().isMicActive) return
+          // Don't open gate when muted — prevents audio leaking through
+          if (useSongShareStore.getState().isMicMuted) return
 
           gateAnalyser.getByteFrequencyData(gateData)
           let sum = 0
@@ -1422,9 +1582,26 @@ export function usePeerShare() {
     const newMuted = !store.isMicMuted
     setMicMuted(newMuted)
 
+    // Method 1: Disable raw mic tracks (standard WebRTC approach)
     store.micStream.getAudioTracks().forEach((track) => {
       track.enabled = !newMuted
     })
+
+    // Method 2: Directly control noise gate gain for IMMEDIATE, reliable muting.
+    // Some browsers may not silence MediaStreamAudioSourceNode when track.enabled=false.
+    // Forcing the gate closed ensures the processed stream is silent regardless.
+    if (noiseProcessorRef.current) {
+      const ctx = noiseProcessorRef.current.audioContext
+      const gate = noiseProcessorRef.current.noiseGate
+      if (newMuted) {
+        // Force gate closed immediately (10ms ramp to avoid click artifact)
+        gate.gain.cancelScheduledValues(ctx.currentTime)
+        gate.gain.setValueAtTime(gate.gain.value, ctx.currentTime)
+        gate.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.01)
+      }
+      // When unmuting, do NOT force the gate open — let the cleanup interval
+      // open it naturally when speech is detected. This avoids sending noise.
+    }
 
     // Notify others
     const manager = managerRef.current!
