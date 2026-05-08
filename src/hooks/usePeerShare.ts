@@ -22,15 +22,19 @@ const MAX_CORRECTION_RATE = 0.05 // max playbackRate deviation for drift correct
 
 /**
  * Compute latency-compensated host time.
- * Uses sentAt for per-message transit time accuracy when available;
- * falls back to the pre-computed RTT/2 estimate from ping/pong.
+ *
+ * IMPORTANT: Uses ONLY the RTT-based latency estimate (from ping/pong).
+ * We do NOT use sentAt because it compares Date.now() from two different
+ * machines (host and guest). Consumer device clocks are rarely synchronized
+ * and can differ by seconds or even minutes. A 30-second clock difference
+ * would cause guests to start 30 seconds into a song that the host started
+ * from the beginning.
+ *
+ * RTT = guest_t4 - guest_t1 uses only ONE clock (the guest's) and is always
+ * accurate regardless of clock skew. The median-filtered RTT/2 estimate is
+ * precise enough for music sync (±50ms jitter is imperceptible).
  */
-function compensateTime(hostTime: number, sentAt?: number, latencyMs?: number): number {
-  if (sentAt) {
-    // Actual one-way transit time for THIS specific message (host→listener)
-    return hostTime + (Date.now() - sentAt) / 1000
-  }
-  // Fallback: use pre-computed latency estimate
+function compensateTime(hostTime: number, _sentAt?: number, latencyMs?: number): number {
   return hostTime + (latencyMs ?? 0) / 1000
 }
 
