@@ -2,6 +2,7 @@
 
 import { motion } from 'framer-motion'
 import { Headphones, LogOut } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { useSongShareStore } from '@/store/songshare'
 import { MusicPlayer } from './MusicPlayer'
 import { Playlist } from './Playlist'
