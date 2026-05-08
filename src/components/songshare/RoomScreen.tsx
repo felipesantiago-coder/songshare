@@ -1,7 +1,8 @@
 'use client'
 
+import { useState, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import { Headphones, LogOut } from 'lucide-react'
+import { Headphones, LogOut, Copy, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSongShareStore } from '@/store/songshare'
 import { MusicPlayer } from './MusicPlayer'
@@ -48,9 +49,29 @@ export function RoomScreen({
   isDragOver,
   setIsDragOver,
 }: RoomScreenProps) {
-  const { room } = useSongShareStore()
+  const { room, roomCode } = useSongShareStore()
   const isPlaying = room?.isPlaying ?? false
-  const users = room?.users ?? []
+  const [copied, setCopied] = useState(false)
+
+  const copyCode = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(roomCode)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      const textArea = document.createElement('textarea')
+      textArea.value = roomCode
+      textArea.style.position = 'fixed'
+      textArea.style.opacity = '0'
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }, [roomCode])
+
   const currentTrack = room && room.currentTrackIndex >= 0
     ? room.playlist[room.currentTrackIndex]
     : null
@@ -69,24 +90,21 @@ export function RoomScreen({
           <span className="text-sm font-semibold text-white hidden sm:inline">SongShare</span>
         </div>
 
-        {/* Room info - mobile: show room name + users */}
-        <div className="flex lg:hidden items-center gap-2">
-          <div className="flex -space-x-1.5">
-            {users.slice(0, 3).map((user) => (
-              <div
-                key={user.id}
-                className="w-5 h-5 rounded-full bg-zinc-800 border border-zinc-900 flex items-center justify-center"
-              >
-                <span className="text-[7px] text-zinc-400 font-medium">
-                  {user.username.substring(0, 2).toUpperCase()}
-                </span>
-              </div>
-            ))}
-          </div>
-          <span className="text-[11px] text-zinc-500">
-            {users.length} online
+        {/* Room code + users - mobile only */}
+        <button
+          onClick={copyCode}
+          className="flex lg:hidden items-center gap-2 px-2.5 py-1 rounded-lg bg-zinc-800/50 border border-zinc-700/40 active:scale-95 transition-transform"
+          title="Toque para copiar o codigo"
+        >
+          <span className="text-sm font-mono font-bold tracking-[0.15em] text-white">
+            {roomCode}
           </span>
-        </div>
+          {copied ? (
+            <Check className="w-3.5 h-3.5 text-emerald-400" />
+          ) : (
+            <Copy className="w-3 h-3 text-zinc-500" />
+          )}
+        </button>
 
         {/* Leave button - always visible */}
         <Button

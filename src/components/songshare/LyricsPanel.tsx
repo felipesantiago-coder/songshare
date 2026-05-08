@@ -57,15 +57,15 @@ export function LyricsPanel({ onUpdateLyrics }: LyricsPanelProps) {
         )}
       </Button>
 
-      {/* Lyrics panel - positioned below the button */}
+      {/* Lyrics panel - bottom sheet on mobile, dropdown on desktop */}
       <AnimatePresence>
         {showLyrics && (
           <motion.div
-            initial={{ opacity: 0, y: -10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.95 }}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.2 }}
-            className="absolute top-full right-0 mt-2 left-0 sm:left-auto w-[calc(100vw-2rem)] sm:w-96 h-[55vh] sm:h-[28rem] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl shadow-black/40 overflow-hidden flex flex-col z-50"
+            className="fixed inset-x-0 bottom-0 sm:absolute sm:inset-auto sm:top-full sm:right-0 sm:bottom-auto sm:w-96 h-[65vh] sm:h-[28rem] bg-zinc-900 border border-zinc-800 border-b-0 sm:border-b rounded-none sm:rounded-xl rounded-t-2xl sm:rounded-t-xl shadow-2xl shadow-black/40 overflow-hidden flex flex-col z-50"
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800/50">
