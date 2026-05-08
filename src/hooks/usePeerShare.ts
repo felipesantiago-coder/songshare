@@ -62,6 +62,10 @@ export function usePeerShare() {
     processedStream: MediaStream
     cleanupInterval: ReturnType<typeof setInterval>
   } | null>(null)
+  // Silent stream for answering calls — ensures SDP answer includes m=audio
+  // so we can receive the remote peer's audio even when our mic is off
+  const silentAnswerStreamRef = useRef<MediaStream | null>(null)
+  const silentAnswerCtxRef = useRef<AudioContext | null>(null)
 
   // ── Zustand selectors ────────────────────────────
   const room = useSongShareStore((s) => s.room)
@@ -184,8 +188,17 @@ export function usePeerShare() {
         stopSpeakingDetection(mediaCall.peer)
       })
 
-      // Auto-answer all incoming voice calls
-      mediaCall.answer()
+      // CRITICAL: answer() MUST receive a stream. PeerJS v1.5.5 only adds audio tracks
+      // to the PeerConnection when options._stream is provided (line 737 of bundler.mjs).
+      // Without a stream, no tracks are added, the SDP answer omits m=audio, and the
+      // remote audio is rejected. We use a silent stream so the answer includes
+      // m=audio with a recvonly transceiver, allowing us to receive remote audio.
+      if (!silentAnswerStreamRef.current) {
+        const ctx = new AudioContext()
+        silentAnswerStreamRef.current = ctx.createMediaStreamDestination().stream
+        silentAnswerCtxRef.current = ctx
+      }
+      mediaCall.answer(silentAnswerStreamRef.current)
     })
 
     /* ─── Event: media call closed ─────────────── */
@@ -771,6 +784,13 @@ export function usePeerShare() {
         localMicAnalysisRef.current = null
       }
 
+      // Clean up silent answer stream AudioContext
+      if (silentAnswerCtxRef.current) {
+        silentAnswerCtxRef.current.close().catch(() => {})
+        silentAnswerCtxRef.current = null
+        silentAnswerStreamRef.current = null
+      }
+
       // Clean up noise processor
       if (noiseProcessorRef.current) {
         clearInterval(noiseProcessorRef.current.cleanupInterval)
@@ -1233,6 +1253,12 @@ export function usePeerShare() {
     } else {
       // Activate mic
       try {
+        // Create AudioContext BEFORE the async getUserMedia call while we're
+        // still in the user gesture context. On iOS Safari, the gesture context
+        // can be consumed by the await, leaving a subsequently-created AudioContext
+        // permanently suspended.
+        const procCtx = new AudioContext()
+
         const rawStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
@@ -1241,16 +1267,8 @@ export function usePeerShare() {
           },
         })
 
-        // ── Noise reduction processing chain ──
-        // rawStream → source → highPass → noiseGate → destination → processedStream
-        // The processedStream is what gets sent to peers (cleaner audio).
-        // Speaking detection uses a separate AnalyserNode on the raw stream
-        // (so detection isn't affected by the noise gate).
-
-        const procCtx = new AudioContext()
-        // Resume in case the user gesture context was consumed by the await above.
-        // If suspended, the entire processing chain is silent (no audio sent to peers).
-        procCtx.resume().catch(() => {})
+        // Ensure the context is running before setting up the processing chain
+        await procCtx.resume()
         const procSource = procCtx.createMediaStreamSource(rawStream)
 
         // 1) High-pass filter: removes AC hum (~50/60Hz), wind noise, low rumble
