@@ -374,6 +374,17 @@ export class PeerManager {
           this.emit('user-left-request', { ...data, peerId: senderPeerId })
         }
         break
+      case 'ping':
+        if (this.isHost) {
+          this.emit('ping', { t1: data.t1, peerId: senderPeerId })
+        }
+        break
+      case 'voice-state-update':
+        if (this.isHost) {
+          // Include senderPeerId so host can exclude the original sender from broadcast
+          this.emit('voice-state-update', { ...data, senderPeerId })
+        }
+        break
       default: {
         // Strip event type to prevent polluting room state
         const { type: _eventType, ...payload } = data

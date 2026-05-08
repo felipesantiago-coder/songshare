@@ -136,7 +136,7 @@ export function ChatPanel({ onSendMessage }: ChatPanelProps) {
         </form>
       </div>
     </>
-  ), [messages])
+  ), [messages, room?.users.length, showChat, closePanel])
 
   return (
     <div className="relative">

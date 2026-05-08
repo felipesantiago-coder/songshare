@@ -24,6 +24,7 @@ export function VoiceChatPanel({ onToggleMic, onToggleMute, onSetPeerVolume }: V
     setShowVoicePanel,
     isMicActive,
     isMicMuted,
+    isLocalSpeaking,
     voiceStreams,
   } = useSongShareStore()
 
@@ -65,7 +66,7 @@ export function VoiceChatPanel({ onToggleMic, onToggleMute, onSetPeerVolume }: V
             const isMe = user.id === myUserId
             const streamKey = user.peerId
             const voiceInfo = streamKey ? voiceStreams.get(streamKey) : null
-            const isSpeaking = isMe ? (isMicActive && !isMicMuted) : (voiceInfo?.isSpeaking ?? false)
+            const isSpeaking = isMe ? isLocalSpeaking : (voiceInfo?.isSpeaking ?? false)
             const hasVoice = isMe ? isMicActive : !!voiceInfo
             const peerVolume = voiceInfo?.volume ?? 1.0
 
@@ -247,7 +248,7 @@ export function VoiceChatPanel({ onToggleMic, onToggleMute, onSetPeerVolume }: V
         </p>
       </div>
     </>
-  ), [users, myUserId, isMicActive, isMicMuted, voiceStreams, onToggleMic, onToggleMute, onSetPeerVolume])
+  ), [users, myUserId, isMicActive, isMicMuted, isLocalSpeaking, voiceStreams, onToggleMic, onToggleMute, onSetPeerVolume])
 
   return (
     <div className="relative">

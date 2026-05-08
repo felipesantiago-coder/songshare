@@ -76,6 +76,7 @@ interface SongShareStore {
   // Voice chat state
   isMicActive: boolean
   isMicMuted: boolean
+  isLocalSpeaking: boolean
   micStream: MediaStream | null
   voiceStreams: Map<string, VoiceStreamInfo>
   allPeerIds: string[] // All peer IDs in room (including host)
@@ -94,6 +95,8 @@ interface SongShareStore {
   // Audio cache actions
   setAudioUrl: (trackId: string, url: string) => void
   getAudioUrl: (trackId: string) => string | undefined
+  revokeAudioUrl: (trackId: string) => void
+  revokeAllAudioUrls: () => void
 
   // Track data chunk management
   addChunk: (trackId: string, chunkIndex: number, totalChunks: number, data: ArrayBuffer) => void
@@ -111,6 +114,7 @@ interface SongShareStore {
   setMicActive: (active: boolean) => void
   setMicMuted: (muted: boolean) => void
   setMicStream: (stream: MediaStream | null) => void
+  setLocalSpeaking: (speaking: boolean) => void
   addVoiceStream: (peerId: string, info: VoiceStreamInfo) => void
   removeVoiceStream: (peerId: string) => void
   setVoiceStreamVolume: (peerId: string, volume: number) => void
@@ -140,6 +144,7 @@ const initialState = {
   editingLyricsTrackId: null,
   isMicActive: false,
   isMicMuted: false,
+  isLocalSpeaking: false,
   micStream: null,
   voiceStreams: new Map<string, VoiceStreamInfo>(),
   allPeerIds: [],
@@ -163,12 +168,31 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
 
   setAudioUrl: (trackId, url) =>
     set((state) => {
+      // Revoke old blob URL if replacing (prevent memory leak)
+      const oldUrl = state.audioCache.get(trackId)
+      if (oldUrl && oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl)
       const newCache = new Map(state.audioCache)
       newCache.set(trackId, url)
       return { audioCache: newCache }
     }),
 
   getAudioUrl: (trackId) => get().audioCache.get(trackId),
+
+  revokeAudioUrl: (trackId) =>
+    set((state) => {
+      const url = state.audioCache.get(trackId)
+      if (url && url.startsWith('blob:')) URL.revokeObjectURL(url)
+      const newCache = new Map(state.audioCache)
+      newCache.delete(trackId)
+      return { audioCache: newCache }
+    }),
+
+  revokeAllAudioUrls: () => {
+    const cache = get().audioCache
+    cache.forEach((url) => {
+      if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+    })
+  },
 
   addChunk: (trackId, chunkIndex, totalChunks, data) =>
     set((state) => {
@@ -212,6 +236,7 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
   setMicActive: (active) => set({ isMicActive: active }),
   setMicMuted: (muted) => set({ isMicMuted: muted }),
   setMicStream: (stream) => set({ micStream: stream }),
+  setLocalSpeaking: (speaking) => set({ isLocalSpeaking: speaking }),
   addVoiceStream: (peerId, info) =>
     set((state) => {
       const newMap = new Map(state.voiceStreams)
@@ -233,11 +258,10 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
   setVoiceStreamVolume: (peerId, volume) =>
     set((state) => {
       const info = state.voiceStreams.get(peerId)
-      if (info) {
-        info.gainNode.gain.value = volume
-      }
+      if (!info) return state // Defensive: no crash if peer doesn't exist
+      info.gainNode.gain.value = volume
       const newMap = new Map(state.voiceStreams)
-      newMap.set(peerId, { ...info!, volume })
+      newMap.set(peerId, { ...info, volume })
       return { voiceStreams: newMap }
     }),
   setVoiceStreamSpeaking: (peerId, speaking) =>
@@ -280,6 +304,12 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
     })
     const micStream = get().micStream
     if (micStream) micStream.getTracks().forEach((t) => t.stop())
+
+    // Revoke all blob URLs to prevent memory leak on room leave
+    get().audioCache.forEach((url) => {
+      if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+    })
+
     set({
       ...initialState,
       audioCache: new Map<string, string>(),

@@ -14,16 +14,16 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SongShare - Oua musica com seus amigos",
-  description: "Plataforma para ouvir musica de arquivos locais simultaneamente com amigos, em sincronia perfeita.",
-  keywords: ["SongShare", "musica", "sincronizado", "amigos", "listen together", "music sync"],
+  title: "SongShare - Ouça música com seus amigos",
+  description: "Plataforma para ouvir música de arquivos locais simultaneamente com amigos, em sincronia perfeita.",
+  keywords: ["SongShare", "música", "sincronizado", "amigos", "listen together", "music sync"],
   authors: [{ name: "SongShare" }],
   icons: {
     icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>",
   },
   openGraph: {
-    title: "SongShare - Oua musica com seus amigos",
-    description: "Plataforma para ouvir musica de arquivos locais simultaneamente com amigos, em sincronia perfeita.",
+    title: "SongShare - Ouça música com seus amigos",
+    description: "Plataforma para ouvir música de arquivos locais simultaneamente com amigos, em sincronia perfeita.",
     type: "website",
   },
 };

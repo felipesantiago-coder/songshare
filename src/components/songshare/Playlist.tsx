@@ -323,14 +323,14 @@ export function Playlist({
 
       {/* Lyrics Dialog */}
       <Dialog open={lyricsDialogOpen} onOpenChange={setLyricsDialogOpen}>
-        <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-md">
-          <DialogHeader>
+        <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-md flex flex-col max-h-[90dvh] overflow-hidden">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle className="text-zinc-200 flex items-center gap-2">
               <FileText className="w-5 h-5 text-rose-500" />
               Adicionar letra
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
             <p className="text-sm text-zinc-400">
               Musica: <span className="text-zinc-200 font-medium">{pendingFiles[currentFileIndex]?.name}</span>
             </p>
@@ -345,7 +345,7 @@ export function Playlist({
               Voce podera editar a letra depois, pela aba de letras.
             </p>
           </div>
-          <DialogFooter className="flex gap-2 sm:gap-0">
+          <DialogFooter className="flex-shrink-0 flex gap-2 sm:gap-0">
             <Button
               variant="ghost"
               onClick={handleDialogSkip}

@@ -28,6 +28,7 @@ export default function Home() {
     toggleMute,
     setPeerVolume,
     resyncIsConnected,
+    leaveRoom,
   } = usePeerShare()
 
   const handleLeave = useCallback(() => {
@@ -35,11 +36,8 @@ export default function Home() {
       audioRef.current.pause()
       audioRef.current.src = ''
     }
-    reset()
-    // reset() sets isConnected=false, but the PeerJS peer may still be alive.
-    // Re-sync to prevent showing "reconnecting" when already connected.
-    setTimeout(() => resyncIsConnected(), 50)
-  }, [audioRef, reset, resyncIsConnected])
+    leaveRoom()
+  }, [audioRef, leaveRoom])
 
   return (
     <AnimatePresence mode="wait">
