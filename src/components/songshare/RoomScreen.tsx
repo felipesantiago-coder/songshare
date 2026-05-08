@@ -1,7 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { Headphones } from 'lucide-react'
+import { Headphones, LogOut } from 'lucide-react'
 import { useSongShareStore } from '@/store/songshare'
 import { MusicPlayer } from './MusicPlayer'
 import { Playlist } from './Playlist'
@@ -86,6 +86,17 @@ export function RoomScreen({
             {users.length} online
           </span>
         </div>
+
+        {/* Leave button - always visible */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onLeave}
+          className="text-zinc-500 hover:text-red-400 hover:bg-red-500/10 h-9 w-9 rounded-full mr-1"
+          title="Sair da sala"
+        >
+          <LogOut className="w-4 h-4" />
+        </Button>
 
         {/* Chat, Voice & Lyrics toggles */}
         <div className="flex items-center gap-1">
