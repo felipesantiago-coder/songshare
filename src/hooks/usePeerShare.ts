@@ -319,6 +319,15 @@ export function usePeerShare() {
       })
     })
 
+    /* ─── Event: remote-stream from outgoing calls ── */
+    // CRITICAL FIX: When A calls B via callWithStream(), B's audio arrives on A's
+    // OUTGOING MediaConnection's 'stream' event. Previously this was only handled
+    // for INCOMING calls (the 'incoming-call' event). Without this, A could never
+    // hear B from the outgoing direction — only from B's separate call to A (mesh).
+    const unsubRemoteStream = manager.on('remote-stream', (data: { peerId: string; stream: MediaStream }) => {
+      processIncomingStream(data.peerId, data.stream)
+    })
+
     /* ─── Event: media call closed ─────────────── */
     const unsubMediaCallClosed = manager.on('media-call-closed', (data: { peerId: string }) => {
       removeVoiceStream(data.peerId)
@@ -973,7 +982,7 @@ export function usePeerShare() {
 
     return () => {
       ;[
-        unsubIncomingCall, unsubMediaCallClosed,
+        unsubIncomingCall, unsubRemoteStream, unsubMediaCallClosed,
         unsubJoin, unsubAccepted, unsubPeerList, unsubNewPeer, unsubVoiceState,
         unsubPlaybackRequest,
         unsubHostOff,

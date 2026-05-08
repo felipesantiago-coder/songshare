@@ -490,9 +490,15 @@ export class PeerManager {
     // Não chamar a si mesmo
     if (peerId === this.peer?.id) return null
 
-    // Não duplicar chamada existente
+    // Não duplicar chamada existente — but check if it's still alive!
     const existing = this.mediaCalls.get(peerId)
-    if (existing && this.mediaCalls.has(peerId)) return existing
+    if (existing) {
+      if ((existing as any).open) return existing
+      // Stale/zombie connection — clean up and create a fresh one
+      console.warn('[SongShare] callWithStream: replacing stale media call to', peerId)
+      try { existing.close() } catch { /* noop */ }
+      this.mediaCalls.delete(peerId)
+    }
 
     try {
       const call = this.peer.call(peerId, stream)
@@ -502,6 +508,42 @@ export class PeerManager {
       }
 
       this.mediaCalls.set(peerId, call)
+
+      // CRITICAL: Listen for the remote peer's stream on OUTGOING calls.
+      // When A calls B, B's audio arrives on A's outgoing MediaConnection's 'stream' event.
+      // Previously this was only handled for INCOMING calls (the 'incoming-call' event),
+      // which meant A could never hear B from the outgoing call direction.
+      call.on('stream', (remoteStream: MediaStream) => {
+        if (remoteStream && remoteStream instanceof MediaStream) {
+          console.log('[SongShare] Outgoing call: received remote stream from', peerId,
+            '— tracks:', remoteStream.getAudioTracks().length)
+          this.emit('remote-stream', { peerId, stream: remoteStream })
+        } else {
+          console.warn('[SongShare] Outgoing call: received invalid stream from', peerId)
+        }
+      })
+
+      // Fallback: if PeerJS's 'stream' event fires with undefined (evt.streams[0] is empty),
+      // listen directly on the RTCPeerConnection for the track event.
+      setTimeout(() => {
+        const pc = (call as any).peerConnection as RTCPeerConnection | undefined
+        if (pc) {
+          const trackHandler = (ev: Event) => {
+            const trackEvent = ev as RTCTrackEvent
+            if (trackEvent.streams && trackEvent.streams.length > 0) {
+              const stream = trackEvent.streams[0]
+              if (stream instanceof MediaStream) {
+                this.emit('remote-stream', { peerId, stream })
+              }
+            } else if (trackEvent.track?.kind === 'audio') {
+              this.emit('remote-stream', { peerId, stream: new MediaStream([trackEvent.track]) })
+            }
+          }
+          pc.addEventListener('track', trackHandler)
+          // Clean up when call closes
+          call.on('close', () => pc.removeEventListener('track', trackHandler))
+        }
+      }, 0)
 
       call.on('error', (err) => {
         console.error('[SongShare] Media call error:', err)
