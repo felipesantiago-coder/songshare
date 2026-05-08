@@ -736,8 +736,9 @@ export function usePeerShare() {
     const currentTime = audio?.currentTime || 0
 
     audio?.play().catch(() => {})
+    updateRoom({ isPlaying: true })
     manager.broadcast({ type: 'play', currentTime })
-  }, [])
+  }, [updateRoom])
 
   const pause = useCallback(() => {
     const manager = managerRef.current!
@@ -747,8 +748,9 @@ export function usePeerShare() {
     const currentTime = audio?.currentTime || 0
 
     audio?.pause()
+    updateRoom({ isPlaying: false })
     manager.broadcast({ type: 'pause', currentTime })
-  }, [])
+  }, [updateRoom])
 
   const seek = useCallback((time: number) => {
     const manager = managerRef.current!
