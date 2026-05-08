@@ -14,13 +14,11 @@ const DRIFT_THRESHOLD_SOFT = 0.3 // seconds — start smooth rate correction
 const DRIFT_THRESHOLD_HARD = 1.5 // seconds — hard seek (reduced from 2.0)
 const MAX_CORRECTION_RATE = 0.05 // max playbackRate deviation for drift correction
 
-// ── Noise reduction settings ──
-const HIGH_PASS_FREQ = 80 // Hz — removes AC hum, wind, low rumble
-const NOISE_GATE_OPEN_THRESHOLD = 0.018 // volume level to open the gate
-const NOISE_GATE_CLOSE_THRESHOLD = 0.012 // volume level to close the gate (hysteresis)
-const NOISE_GATE_ATTACK_MS = 10 // ms to fully open gate (fast — no word clipping)
-const NOISE_GATE_RELEASE_MS = 150 // ms to fully close gate (smooth — no click artifacts)
-const NOISE_GATE_HOLD_MS = 200 // ms to hold open after speech stops (avoids cutting word endings)
+// ── Voice chat uses browser's built-in audio processing only ──
+// getUserMedia({ echoCancellation, noiseSuppression, autoGainControl }) handles all
+// noise reduction. Custom noise gates / high-pass filters were removed because they
+// could block legitimate speech (gate starts closed at gain=0, frequency-domain
+// averaging near threshold boundary caused unreliable gate opening).
 
 /**
  * Compute latency-compensated host time.
@@ -53,14 +51,11 @@ export function usePeerShare() {
   const latencyHistoryRef = useRef<number[]>([]) // last 10 RTT/2 samples
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const localMicAnalysisRef = useRef<{ audioContext: AudioContext; source: MediaStreamAudioSourceNode; analyser: AnalyserNode } | null>(null)
+  // Stores the mic stream used for outgoing voice calls.
+  // processedStream is the raw mic stream — browser's built-in echoCancellation,
+  // noiseSuppression, and autoGainControl handle all audio processing.
   const noiseProcessorRef = useRef<{
-    audioContext: AudioContext
-    source: MediaStreamAudioSourceNode
-    highPass: BiquadFilterNode
-    noiseGate: GainNode
-    destination: MediaStreamAudioDestinationNode
     processedStream: MediaStream
-    cleanupInterval: ReturnType<typeof setInterval>
   } | null>(null)
   // Silent stream for answering calls — ensures SDP answer includes m=audio
   // so we can receive the remote peer's audio even when our mic is off
@@ -137,6 +132,9 @@ export function usePeerShare() {
         return
       }
 
+      console.log('[SongShare] processIncomingStream: processing voice from', peerId,
+        '— tracks:', audioTracks.length, audioTracks.map((t) => `${t.kind} [ready=${t.readyState}, enabled=${t.enabled}]`).join(', '))
+
       // Single shared AudioContext for this peer
       const audioContext = new AudioContext()
 
@@ -206,6 +204,8 @@ export function usePeerShare() {
       }
 
       store.addVoiceStream(peerId, info)
+      console.log('[SongShare] Voice stream from', peerId, 'added — AudioContext state:', audioContext.state,
+        'gain:', gainNode.gain.value)
     } catch (err) {
       console.error('[SongShare] processIncomingStream error for', peerId, ':', err)
     }
@@ -1004,15 +1004,7 @@ export function usePeerShare() {
       }
 
       // Clean up noise processor
-      if (noiseProcessorRef.current) {
-        clearInterval(noiseProcessorRef.current.cleanupInterval)
-        noiseProcessorRef.current.source.disconnect()
-        noiseProcessorRef.current.highPass.disconnect()
-        noiseProcessorRef.current.noiseGate.disconnect()
-        noiseProcessorRef.current.destination.disconnect()
-        noiseProcessorRef.current.audioContext.close().catch(() => {})
-        noiseProcessorRef.current = null
-      }
+      noiseProcessorRef.current = null
 
       manager.disconnect()
       if (timeSyncRef.current) clearInterval(timeSyncRef.current)
@@ -1151,14 +1143,33 @@ export function usePeerShare() {
       const procStream = noiseProcessorRef.current.processedStream
       if (!procStream) return
 
-      // Check each known peer — if we don't have a media call for them, try to establish one
+      // Verify the mic stream is still live
+      const liveTracks = procStream.getAudioTracks().filter((t) => t.readyState === 'live')
+      if (liveTracks.length === 0) {
+        console.warn('[SongShare] Voice health check: mic stream has no live tracks')
+        return
+      }
+
+      // Check each known peer
       store.allPeerIds.forEach((peerId) => {
         if (peerId === manager.getMyPeerId()) return
-        if (!manager.mediaCalls.has(peerId)) {
-          // No active media call for this peer — try to establish
+
+        const existingCall = manager.mediaCalls.get(peerId)
+        if (existingCall) {
+          // Verify ICE connection is still alive
+          const pc = (existingCall as any).peerConnection as RTCPeerConnection | undefined
+          const iceState = pc?.iceConnectionState
+          if (!pc || iceState === 'failed' || iceState === 'closed') {
+            console.warn('[SongShare] Voice health check: ICE', iceState, 'for', peerId, '— re-establishing')
+            manager.hangupMedia(peerId)
+            manager.callWithStream(peerId, procStream)
+          }
+          // 'disconnected' is transient — ICE may recover on its own within ~10s
+        } else {
+          // No call at all — establish one
           const call = manager.callWithStream(peerId, procStream)
           if (call) {
-            console.log('[SongShare] Voice health check: re-established call to', peerId)
+            console.log('[SongShare] Voice health check: established call to', peerId)
           }
         }
       })
@@ -1523,16 +1534,8 @@ export function usePeerShare() {
         speakingIntervalsRef.current.delete('__local__')
       }
 
-      // Clean up noise processor
-      if (noiseProcessorRef.current) {
-        clearInterval(noiseProcessorRef.current.cleanupInterval)
-        noiseProcessorRef.current.source.disconnect()
-        noiseProcessorRef.current.highPass.disconnect()
-        noiseProcessorRef.current.noiseGate.disconnect()
-        noiseProcessorRef.current.destination.disconnect()
-        noiseProcessorRef.current.audioContext.close().catch(() => {})
-        noiseProcessorRef.current = null
-      }
+      // Clean up noise processor (simplified — no custom AudioContext chain)
+      noiseProcessorRef.current = null
 
       // Notify others
       if (manager.isHost) {
@@ -1554,12 +1557,9 @@ export function usePeerShare() {
     } else {
       // Activate mic
       try {
-        // Create AudioContext BEFORE the async getUserMedia call while we're
-        // still in the user gesture context. On iOS Safari, the gesture context
-        // can be consumed by the await, leaving a subsequently-created AudioContext
-        // permanently suspended.
-        const procCtx = new AudioContext()
-
+        // Get raw mic stream with browser's built-in audio processing.
+        // echoCancellation, noiseSuppression, and autoGainControl are handled
+        // by the browser's WebRTC audio engine — no custom processing needed.
         const rawStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
@@ -1568,120 +1568,22 @@ export function usePeerShare() {
           },
         })
 
-        // Ensure the context is running before setting up the processing chain.
-        // In some browsers, resume() resolves immediately even if the context
-        // hasn't transitioned to 'running' yet. Verify the actual state.
-        await procCtx.resume()
-        if (procCtx.state !== 'running') {
-          // Retry with a longer wait — some browsers need extra time
-          await new Promise<void>((resolve) => {
-            const check = () => {
-              if (procCtx.state === 'running') { resolve(); return }
-              procCtx.resume().then(() => {
-                if (procCtx.state === 'running') resolve()
-                else setTimeout(check, 100)
-              }).catch(() => setTimeout(check, 100))
-            }
-            setTimeout(check, 100)
-            // Timeout after 3 seconds — proceed anyway
-            setTimeout(resolve, 3000)
-          })
-        }
-        console.log('[SongShare] procCtx state after resume:', procCtx.state)
-        const procSource = procCtx.createMediaStreamSource(rawStream)
+        console.log('[SongShare] Mic activated — tracks:', rawStream.getAudioTracks().length,
+          rawStream.getAudioTracks().map((t) => `${t.label} [ready=${t.readyState}, enabled=${t.enabled}]`).join(', '))
 
-        // 1) High-pass filter: removes AC hum (~50/60Hz), wind noise, low rumble
-        const highPass = procCtx.createBiquadFilter()
-        highPass.type = 'highpass'
-        highPass.frequency.value = HIGH_PASS_FREQ
-        highPass.Q.value = 0.7 // gentle slope, no resonance artifacts
-
-        // 2) Noise gate: smoothly attenuates audio when volume is below threshold.
-        //    Uses hysteresis (different open/close thresholds) to prevent rapid toggling.
-        //    Ramp times are asymmetric: fast attack (10ms) to never clip word starts,
-        //    slow release (150ms) for natural decay without click artifacts.
-        const noiseGate = procCtx.createGain()
-        noiseGate.gain.value = 0 // start closed
-
-        // Analyser for noise gate volume detection (separate from speaking detection)
-        const gateAnalyser = procCtx.createAnalyser()
-        gateAnalyser.fftSize = 512
-        gateAnalyser.smoothingTimeConstant = 0.5 // faster response than speaking detection
-
-        const gateData = new Uint8Array(gateAnalyser.frequencyBinCount)
-        let gateOpen = false
-        let holdUntil = 0 // timestamp to hold gate open
-
-        // Noise gate control loop (runs at ~7Hz — efficient, no audio artifacts)
-        const cleanupInterval = setInterval(() => {
-          if (!useSongShareStore.getState().isMicActive) return
-          // Don't open gate when muted — prevents audio leaking through
-          if (useSongShareStore.getState().isMicMuted) return
-
-          gateAnalyser.getByteFrequencyData(gateData)
-          let sum = 0
-          for (let i = 0; i < gateData.length; i++) sum += gateData[i]
-          const volume = sum / gateData.length / 255
-          const now = performance.now()
-
-          if (!gateOpen) {
-            // Gate closed — check if volume exceeds open threshold
-            if (volume > NOISE_GATE_OPEN_THRESHOLD) {
-              gateOpen = true
-              holdUntil = now + NOISE_GATE_HOLD_MS
-              // Fast attack: ramp to 1.0 over NOISE_GATE_ATTACK_MS
-              noiseGate.gain.cancelScheduledValues(procCtx.currentTime)
-              noiseGate.gain.setValueAtTime(noiseGate.gain.value, procCtx.currentTime)
-              noiseGate.gain.linearRampToValueAtTime(1.0, procCtx.currentTime + NOISE_GATE_ATTACK_MS / 1000)
-            }
-          } else {
-            // Gate open — check if volume dropped below close threshold
-            if (volume < NOISE_GATE_CLOSE_THRESHOLD) {
-              if (now < holdUntil) {
-                // Still in hold period — keep gate open
-              } else {
-                // Release: smooth ramp to 0 over NOISE_GATE_RELEASE_MS
-                gateOpen = false
-                noiseGate.gain.cancelScheduledValues(procCtx.currentTime)
-                noiseGate.gain.setValueAtTime(noiseGate.gain.value, procCtx.currentTime)
-                noiseGate.gain.linearRampToValueAtTime(0, procCtx.currentTime + NOISE_GATE_RELEASE_MS / 1000)
-              }
-            } else {
-              // Volume still above threshold — reset hold timer
-              holdUntil = now + NOISE_GATE_HOLD_MS
-            }
-          }
-        }, 150)
-
-        // Connect processing chain
-        procSource.connect(highPass)
-        highPass.connect(noiseGate)
-        highPass.connect(gateAnalyser) // tap for volume detection (doesn't affect audio path)
-
-        // Create destination for processed output
-        const dest = procCtx.createMediaStreamDestination()
-        noiseGate.connect(dest)
-        const processedStreamFinal = dest.stream
-
-        // Store processor ref for cleanup
+        // Store raw stream as the processed stream — send directly to peers.
+        // No custom noise gate / high-pass filter — the browser handles everything.
         noiseProcessorRef.current = {
-          audioContext: procCtx,
-          source: procSource,
-          highPass,
-          noiseGate,
-          destination: dest,
-          processedStream: processedStreamFinal,
-          cleanupInterval,
+          processedStream: rawStream,
         }
 
-        // Store raw stream reference (needed for track cleanup)
+        // Store raw stream reference (needed for mute toggle and track cleanup)
         setMicStream(rawStream)
         setMicActive(true)
         setMicMuted(false)
 
-        // ── Speaking detection (on raw stream, independent of noise gate) ──
+        // ── Speaking detection (separate AudioContext, NOT in the audio output path) ──
         const analysisCtx = new AudioContext()
-        // Resume for reliable speaking detection (may be suspended after async getUserMedia).
         analysisCtx.resume().catch(() => {})
         const analysisSource = analysisCtx.createMediaStreamSource(rawStream)
         const analyser = analysisCtx.createAnalyser()
@@ -1704,11 +1606,17 @@ export function usePeerShare() {
         }, 150)
         speakingIntervalsRef.current.set('__local__', localInterval)
 
-        // Call all known peers with the PROCESSED stream (not raw)
+        // Call all known peers with the raw mic stream directly
         const peerIds = store.allPeerIds
+        console.log('[SongShare] Calling', peerIds.filter((p) => p !== manager.getMyPeerId()).length, 'peers with voice stream')
         peerIds.forEach((peerId) => {
           if (peerId !== manager.getMyPeerId()) {
-            manager.callWithStream(peerId, processedStreamFinal)
+            const call = manager.callWithStream(peerId, rawStream)
+            if (call) {
+              console.log('[SongShare] Voice call established to', peerId)
+            } else {
+              console.warn('[SongShare] Failed to establish voice call to', peerId)
+            }
           }
         })
 
@@ -1743,26 +1651,14 @@ export function usePeerShare() {
     const newMuted = !store.isMicMuted
     setMicMuted(newMuted)
 
-    // Method 1: Disable raw mic tracks (standard WebRTC approach)
+    // Mute/unmute by toggling track.enabled — the standard WebRTC approach.
+    // When enabled=false, WebRTC stops sending audio on the track immediately.
     store.micStream.getAudioTracks().forEach((track) => {
       track.enabled = !newMuted
     })
 
-    // Method 2: Directly control noise gate gain for IMMEDIATE, reliable muting.
-    // Some browsers may not silence MediaStreamAudioSourceNode when track.enabled=false.
-    // Forcing the gate closed ensures the processed stream is silent regardless.
-    if (noiseProcessorRef.current) {
-      const ctx = noiseProcessorRef.current.audioContext
-      const gate = noiseProcessorRef.current.noiseGate
-      if (newMuted) {
-        // Force gate closed immediately (10ms ramp to avoid click artifact)
-        gate.gain.cancelScheduledValues(ctx.currentTime)
-        gate.gain.setValueAtTime(gate.gain.value, ctx.currentTime)
-        gate.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.01)
-      }
-      // When unmuting, do NOT force the gate open — let the cleanup interval
-      // open it naturally when speech is detected. This avoids sending noise.
-    }
+    console.log('[SongShare] Mic', newMuted ? 'muted' : 'unmuted',
+      '— tracks:', store.micStream.getAudioTracks().map((t) => `enabled=${t.enabled}`).join(', '))
 
     // Notify others
     const manager = managerRef.current!
