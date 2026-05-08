@@ -22,6 +22,7 @@ export default function Home() {
     seek,
     nextTrack,
     previousTrack,
+    requestPlayback,
     sendChatMessage,
     updateTrackLyrics,
     toggleMic,
@@ -70,6 +71,7 @@ export default function Home() {
             onSeek={seek}
             onNext={nextTrack}
             onPrevious={previousTrack}
+            onRequestPlayback={requestPlayback}
             onAddTrack={addTrack}
             onRemoveTrack={removeTrack}
             onSendMessage={sendChatMessage}

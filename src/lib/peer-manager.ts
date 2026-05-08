@@ -385,6 +385,12 @@ export class PeerManager {
           this.emit('voice-state-update', { ...data, senderPeerId })
         }
         break
+      case 'playback-request':
+        if (this.isHost) {
+          // Listener requests host to execute a playback action (play/pause/seek/next/previous)
+          this.emit('playback-request', { ...data, senderPeerId })
+        }
+        break
       default: {
         // Strip event type to prevent polluting room state
         const { type: _eventType, ...payload } = data

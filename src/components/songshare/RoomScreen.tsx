@@ -19,6 +19,7 @@ interface RoomScreenProps {
   onSeek: (time: number) => void
   onNext: () => void
   onPrevious: () => void
+  onRequestPlayback: (action: 'play' | 'pause' | 'next' | 'previous' | 'seek', seekTime?: number) => void
   onAddTrack: (file: File, lyrics?: string) => void
   onRemoveTrack: (trackId: string) => void
   onSendMessage: (content: string) => void
@@ -38,6 +39,7 @@ export function RoomScreen({
   onSeek,
   onNext,
   onPrevious,
+  onRequestPlayback,
   onAddTrack,
   onRemoveTrack,
   onSendMessage,
@@ -184,6 +186,7 @@ export function RoomScreen({
                   onSeek={onSeek}
                   onNext={onNext}
                   onPrevious={onPrevious}
+                  onRequestPlayback={onRequestPlayback}
                 />
               </div>
             </div>
@@ -231,6 +234,7 @@ export function RoomScreen({
                   onSeek={onSeek}
                   onNext={onNext}
                   onPrevious={onPrevious}
+                  onRequestPlayback={onRequestPlayback}
                 />
               </motion.div>
 

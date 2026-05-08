@@ -369,6 +369,71 @@ export function usePeerShare() {
       }
     })
 
+    /* ─── Event: playback-request (host executes action requested by a listener) ── */
+    const unsubPlaybackRequest = manager.on('playback-request', (data: { action: 'play' | 'pause' | 'seek' | 'next' | 'previous'; seekTime?: number; senderPeerId?: string; username?: string }) => {
+      if (!manager.isHost) return
+
+      const state = useSongShareStore.getState()
+      if (!state.room || state.room.currentTrackIndex < 0) return
+
+      const audio = audioRef.current
+
+      switch (data.action) {
+        case 'play': {
+          const currentTime = audio?.currentTime || 0
+          audio?.play().catch(() => {})
+          updateRoom({ isPlaying: true })
+          manager.broadcast({ type: 'play', currentTime, sentAt: Date.now() })
+          break
+        }
+        case 'pause': {
+          const currentTime = audio?.currentTime || 0
+          audio?.pause()
+          updateRoom({ isPlaying: false })
+          manager.broadcast({ type: 'pause', currentTime, sentAt: Date.now() })
+          break
+        }
+        case 'seek': {
+          if (data.seekTime != null && audio) {
+            audio.currentTime = data.seekTime
+            manager.broadcast({ type: 'seek', time: data.seekTime, sentAt: Date.now() })
+          }
+          break
+        }
+        case 'next': {
+          if (state.room.currentTrackIndex < state.room.playlist.length - 1) {
+            const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex + 1, currentTime: 0 }
+            setRoom(updated)
+            manager.broadcast({
+              type: 'track-changed',
+              currentTrackIndex: updated.currentTrackIndex,
+              currentTime: 0,
+              playlist: updated.playlist,
+              sentAt: Date.now(),
+            })
+          }
+          break
+        }
+        case 'previous': {
+          if (audio && audio.currentTime > 3) {
+            audio.currentTime = 0
+            manager.broadcast({ type: 'seek', time: 0, sentAt: Date.now() })
+          } else if (state.room.currentTrackIndex > 0) {
+            const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex - 1, currentTime: 0 }
+            setRoom(updated)
+            manager.broadcast({
+              type: 'track-changed',
+              currentTrackIndex: updated.currentTrackIndex,
+              currentTime: 0,
+              playlist: updated.playlist,
+              sentAt: Date.now(),
+            })
+          }
+          break
+        }
+      }
+    })
+
     /* ─── Event: host-disconnected ──────────────── */
     const unsubHostOff = manager.on('host-disconnected', () => {
       const state = useSongShareStore.getState()
@@ -685,6 +750,7 @@ export function usePeerShare() {
       ;[
         unsubIncomingCall, unsubMediaCallClosed,
         unsubJoin, unsubAccepted, unsubPeerList, unsubNewPeer, unsubVoiceState,
+        unsubPlaybackRequest,
         unsubHostOff,
         unsubUserJoined, unsubUserLeft, unsubLeftReq, unsubListenerLost,
         unsubPlay, unsubPause, unsubSeek, unsubSync,
@@ -1410,6 +1476,31 @@ export function usePeerShare() {
     reset()
   }, [reset])
 
+  /* ── Playback request (listeners ask host to control playback) ── */
+
+  const requestPlayback = useCallback((action: 'play' | 'pause' | 'next' | 'previous' | 'seek', seekTime?: number) => {
+    const manager = managerRef.current!
+    if (manager.isHost) return // Host executes directly via play/pause/seek/nextTrack/previousTrack
+
+    const state = useSongShareStore.getState()
+    if (!state.room || state.room.currentTrackIndex < 0) return
+
+    if (action === 'seek') {
+      manager.sendToHost({
+        type: 'playback-request',
+        action: 'seek',
+        seekTime,
+        username: username.trim(),
+      })
+    } else {
+      manager.sendToHost({
+        type: 'playback-request',
+        action,
+        username: username.trim(),
+      })
+    }
+  }, [username])
+
   return {
     audioRef,
     createRoom,
@@ -1421,6 +1512,7 @@ export function usePeerShare() {
     seek,
     nextTrack,
     previousTrack,
+    requestPlayback,
     sendChatMessage,
     updateTrackLyrics,
     // Voice chat

@@ -15,6 +15,7 @@ interface MusicPlayerProps {
   onSeek: (time: number) => void
   onNext: () => void
   onPrevious: () => void
+  onRequestPlayback?: (action: 'play' | 'pause' | 'next' | 'previous' | 'seek', seekTime?: number) => void
 }
 
 export function MusicPlayer({
@@ -24,6 +25,7 @@ export function MusicPlayer({
   onSeek,
   onNext,
   onPrevious,
+  onRequestPlayback,
 }: MusicPlayerProps) {
   const { room, socket } = useSongShareStore()
   const [isMuted, setIsMuted] = useState(false)
@@ -59,9 +61,34 @@ export function MusicPlayer({
     }
   }, [audioRef])
 
-  const handleSeek = useCallback((value: number[]) => {
-    onSeek(value[0])
-  }, [onSeek])
+  // Use requestPlayback for guests (sends request to host), direct actions for host
+  const handlePlay = useCallback(() => {
+    if (isHost) onPlay()
+    else onRequestPlayback?.('play')
+  }, [isHost, onPlay, onRequestPlayback])
+
+  const handlePause = useCallback(() => {
+    if (isHost) onPause()
+    else onRequestPlayback?.('pause')
+  }, [isHost, onPause, onRequestPlayback])
+
+  const handleNext = useCallback(() => {
+    if (isHost) onNext()
+    else onRequestPlayback?.('next')
+  }, [isHost, onNext, onRequestPlayback])
+
+  const handlePrevious = useCallback(() => {
+    if (isHost) onPrevious()
+    else onRequestPlayback?.('previous')
+  }, [isHost, onPrevious, onRequestPlayback])
+
+  const handleSeekRequest = useCallback((value: number[]) => {
+    if (isHost) {
+      onSeek(value[0])
+    } else {
+      onRequestPlayback?.('seek', value[0])
+    }
+  }, [isHost, onSeek, onRequestPlayback])
 
   const toggleMute = useCallback(() => {
     if (audioRef.current) {
@@ -102,8 +129,8 @@ export function MusicPlayer({
             value={[smoothTime]}
             max={currentTrack?.duration || 100}
             step={0.1}
-            onValueChange={isHost ? handleSeek : undefined}
-            disabled={!isHost || !currentTrack}
+            onValueChange={handleSeekRequest}
+            disabled={!currentTrack}
             className="w-full [&_[data-slot=slider-track]]:h-2 sm:h-1.5 [&_[data-slot=slider-thumb]]:h-6 [&_[data-slot=slider-thumb]]:w-6 sm:[&_[data-slot=slider-thumb]]:h-4 sm:[&_[data-slot=slider-thumb]]:w-4 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 sm:[&_[data-slot=slider-thumb]]:ring-0 [&_[data-slot=slider-range]]:bg-rose-500"
           />
         </div>
@@ -118,8 +145,8 @@ export function MusicPlayer({
         <Button
           variant="ghost"
           size="icon"
-          onClick={onPrevious}
-          disabled={!isHost || !currentTrack}
+          onClick={handlePrevious}
+          disabled={!currentTrack}
           className="text-zinc-400 hover:text-white h-14 w-14 sm:h-10 sm:w-10 rounded-full active:scale-95"
         >
           <SkipBack className="w-6 h-6 sm:w-4 sm:h-4" />
@@ -127,8 +154,8 @@ export function MusicPlayer({
 
         <Button
           size="icon"
-          onClick={room?.isPlaying ? onPause : onPlay}
-          disabled={!isHost || !currentTrack}
+          onClick={room?.isPlaying ? handlePause : handlePlay}
+          disabled={!currentTrack}
           className="h-[4.5rem] w-[4.5rem] sm:h-14 sm:w-14 rounded-full bg-white text-zinc-900 hover:bg-zinc-200 shadow-lg shadow-white/10 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
         >
           {room?.isPlaying ? (
@@ -141,8 +168,8 @@ export function MusicPlayer({
         <Button
           variant="ghost"
           size="icon"
-          onClick={onNext}
-          disabled={!isHost || !currentTrack}
+          onClick={handleNext}
+          disabled={!currentTrack}
           className="text-zinc-400 hover:text-white h-14 w-14 sm:h-10 sm:w-10 rounded-full active:scale-95"
         >
           <SkipForward className="w-6 h-6 sm:w-4 sm:h-4" />
@@ -176,7 +203,7 @@ export function MusicPlayer({
 
       {!isHost && currentTrack && (
         <p className="text-xs text-zinc-600 text-center mt-3 sm:mt-2">
-          Apenas o host pode controlar a reproducao
+          Os controles enviam solicitacoes ao host
         </p>
       )}
     </div>
