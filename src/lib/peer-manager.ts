@@ -90,6 +90,9 @@ export class PeerManager {
 
       this.peer.on('open', (openedId) => {
         clearTimeout(timeout)
+        // Emit 'connected' so the hook can update isConnected state
+        // This fires on initial connection AND on reconnection after a drop
+        this.emit('connected')
         resolve(openedId)
       })
 
@@ -152,8 +155,8 @@ export class PeerManager {
     this.roomCode = code.toUpperCase()
     this.connections.clear()
 
-    // Garantir que o peer local existe
-    if (!this.peer || this.peer.destroyed) {
+    // Garantir que o peer local existe e está conectado ao signaling
+    if (!this.peer || this.peer.destroyed || this.peer.disconnected) {
       await this._createPeer()
     }
 
