@@ -35,7 +35,8 @@ const MAX_CORRECTION_RATE = 0.05 // max playbackRate deviation for drift correct
  * precise enough for music sync (±50ms jitter is imperceptible).
  */
 function compensateTime(hostTime: number, _sentAt?: number, latencyMs?: number): number {
-  return hostTime + (latencyMs ?? 0) / 1000
+  const result = hostTime + (latencyMs ?? 0) / 1000
+  return result
 }
 
 /**
@@ -685,9 +686,15 @@ export function usePeerShare() {
 
     const unsubPlay = manager.on('play', (data: { currentTime: number; sentAt?: number }) => {
       // Always compensate for play — the host IS advancing during message transit.
-      // compensateTime(hostTime, sentAt) = hostTime + transit, which is where the host
-      // actually is when the guest receives the message.
+      // Uses ONLY RTT-based latency (single clock), never sentAt (cross-device clock skew).
       const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+
+      console.log('[SongShare] Play received:', {
+        hostTime: data.currentTime,
+        compensated,
+        latencyMs: latencyRef.current,
+        sentAtDiff: data.sentAt ? `${Date.now() - data.sentAt}ms (cross-clock, IGNORED)` : 'none',
+      })
 
       // Clear any previous pending play intent
       pendingPlayRef.current = null
@@ -698,20 +705,20 @@ export function usePeerShare() {
       const trackUrl = currentTrack ? store.audioCache.get(currentTrack.id) : null
       const audio = audioRef.current
 
-      if (trackUrl && audio && audio.src === trackUrl) {
-        // Audio data is loaded and matches current track — play immediately
+      if (trackUrl && audio) {
+        // Audio data is available (cached) — load and play immediately
+        if (audio.src !== trackUrl) audio.src = trackUrl
         updateRoom({ isPlaying: true, currentTime: compensated })
         audio.currentTime = compensated
         audio.playbackRate = 1.0
         audio.play().catch(() => {})
+        console.log('[SongShare] Play: audio cached, started at', compensated.toFixed(3))
       } else {
         // Audio data NOT available yet — store play intent so the track-data-chunk
         // completion handler can calculate the correct start position when data arrives.
-        // Don't update currentTime here to prevent stale values.
         pendingPlayRef.current = { hostTime: data.currentTime, receivedAt: Date.now() }
         updateRoom({ isPlaying: true, currentTime: compensated })
-        // Don't try to play — audio isn't loaded yet (would fail silently and
-        // leave audio.paused = true, preventing time-sync from running)
+        console.log('[SongShare] Play: audio NOT cached, set pendingPlayRef', { hostTime: data.currentTime, receivedAt: pendingPlayRef.current.receivedAt })
       }
     })
 
@@ -867,24 +874,39 @@ export function usePeerShare() {
               const audio = audioRef.current
               audio.src = url
               if (st.room.isPlaying) {
-                // Calculate the correct start position:
-                // - If a 'play' event was received earlier but audio wasn't available,
-                //   use pendingPlayRef to estimate where the host currently is
-                //   (hostTime + elapsed time since play was received).
-                // - Otherwise fall back to room.currentTime (set by the last
-                //   play/seek/track-changed event).
-                // This prevents starting from a stale position when data transfer
-                // took time after the play command was issued.
+                // Calculate the correct start position.
+                // Only play if we have a pendingPlayRef from a recent 'play' event —
+                // this guarantees we use the host's actual position, not a stale
+                // room.currentTime from join-accepted or a previous session.
+                //
+                // WITHOUT pendingPlayRef: don't start playback here.
+                // The time-sync interval (1.5s) will detect drift and correct
+                // the guest's position once a 'play' event arrives and sets
+                // audio.playing = true. Starting blindly at room.currentTime
+                // is dangerous because:
+                //   1. join-accepted includes the host's position at join time
+                //      (could be 30+ seconds into a song)
+                //   2. room.currentTime may not reflect where the host is NOW
+                //   3. The host may have paused/sought since the state was sent
                 let startTime: number
                 if (pendingPlayRef.current) {
                   const elapsed = (Date.now() - pendingPlayRef.current.receivedAt) / 1000
                   startTime = pendingPlayRef.current.hostTime + elapsed
                   pendingPlayRef.current = null
+                  audio.currentTime = startTime
+                  audio.play().catch(() => {})
+                  console.log('[SongShare] Chunks complete: playing from pendingPlayRef', {
+                    hostTime: pendingPlayRef?.hostTime,
+                    elapsed: elapsed.toFixed(2),
+                    startTime: startTime.toFixed(2),
+                  })
                 } else {
-                  startTime = st.room.currentTime || 0
+                  // No explicit play event received yet.
+                  // The audio element now has the src loaded, so when the 'play'
+                  // event arrives, it will match (audio.src === trackUrl) and
+                  // play immediately with the correct compensated time.
+                  console.log('[SongShare] Chunks complete: audio loaded, waiting for play event (no pendingPlayRef)')
                 }
-                audio.currentTime = startTime
-                audio.play().catch(() => {})
               }
             }
           }
@@ -1122,20 +1144,17 @@ export function usePeerShare() {
     const url = useSongShareStore.getState().audioCache.get(track.id)
     if (url && audio.src !== url) {
       audio.src = url
-      if (room.isPlaying) {
-        // If a play was pending (audio wasn't available when play event arrived),
-        // calculate host's estimated current position instead of using stale room.currentTime.
-        // Otherwise use room.currentTime which was set by the most recent play/seek event.
-        let startTime: number
-        if (pendingPlayRef.current) {
-          const elapsed = (Date.now() - pendingPlayRef.current.receivedAt) / 1000
-          startTime = pendingPlayRef.current.hostTime + elapsed
-          pendingPlayRef.current = null
-        } else {
-          startTime = room.currentTime || 0
-        }
+      if (room.isPlaying && pendingPlayRef.current) {
+        // Only start playback if we have an explicit play intent (pendingPlayRef).
+        // Don't blindly use room.currentTime — it may be stale from join-accepted
+        // or a previous session. The 'play' event will set pendingPlayRef when it
+        // arrives, and this effect will re-run to handle it.
+        const elapsed = (Date.now() - pendingPlayRef.current.receivedAt) / 1000
+        const startTime = pendingPlayRef.current.hostTime + elapsed
+        pendingPlayRef.current = null
         audio.currentTime = startTime
         audio.play().catch(() => {})
+        console.log('[SongShare] Track useEffect: playing from pendingPlayRef', startTime.toFixed(2))
       }
     }
   }, [room?.currentTrackIndex, room?.isPlaying])
