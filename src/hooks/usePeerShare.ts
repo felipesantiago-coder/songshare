@@ -1047,6 +1047,16 @@ export function usePeerShare() {
     setVoiceStreamVolume(peerId, volume)
   }, [setVoiceStreamVolume])
 
+  /** Re-sync isConnected with the actual PeerJS peer state (e.g. after reset). */
+  const resyncIsConnected = useCallback(() => {
+    const manager = managerRef.current
+    if (manager?.peer && !manager.peer.destroyed && !manager.peer.disconnected) {
+      setIsConnected(true)
+    } else {
+      setIsConnected(false)
+    }
+  }, [setIsConnected])
+
   return {
     audioRef,
     createRoom,
@@ -1064,5 +1074,6 @@ export function usePeerShare() {
     toggleMic,
     toggleMute,
     setPeerVolume,
+    resyncIsConnected,
   }
 }

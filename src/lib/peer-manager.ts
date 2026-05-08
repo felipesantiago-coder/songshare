@@ -37,6 +37,8 @@ export class PeerManager {
   isHost = false
 
   private handlers = new Map<string, Set<Handler>>()
+  private reconnectTimer: ReturnType<typeof setInterval> | null = null
+  private _reconnectingToHost: string | null = null
 
   /* ── EventEmitter ─────────────────────────────── */
 
@@ -60,10 +62,24 @@ export class PeerManager {
 
   /* ── Conexão ao servidor de sinalização ──────── */
 
-  /** Cria peer com ID aleatório (usado ao montar o app). */
-  async connect(): Promise<void> {
+  /** Cria peer com ID aleatório (usado ao montar o app). Retries automatically. */
+  async connect(maxRetries = 2): Promise<void> {
     this.destroy()
-    await this._createPeer()
+    let lastError: any
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await this._createPeer()
+        return
+      } catch (err) {
+        lastError = err
+        if (attempt < maxRetries) {
+          console.warn(`[SongShare] Initial connection failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in 3s...`)
+          await new Promise((r) => setTimeout(r, 3000))
+        }
+      }
+    }
+    console.error('[SongShare] Failed to connect after all retries')
+    throw lastError
   }
 
   /** Cria a instância PeerJS. */
@@ -90,9 +106,18 @@ export class PeerManager {
 
       this.peer.on('open', (openedId) => {
         clearTimeout(timeout)
+        this.stopReconnectLoop()
         // Emit 'connected' so the hook can update isConnected state
         // This fires on initial connection AND on reconnection after a drop
         this.emit('connected')
+
+        // If we're a listener in a room and lost the DataConnection,
+        // re-establish it now that signaling is back
+        if (!this.isHost && this.roomCode && !this.connections.has(`${PEER_PREFIX}${this.roomCode}`)) {
+          console.log('[SongShare] Signaling reconnected, re-establishing DataConnection to host...')
+          this._attemptReconnectToHost(`${PEER_PREFIX}${this.roomCode}`)
+        }
+
         resolve(openedId)
       })
 
@@ -111,11 +136,44 @@ export class PeerManager {
 
       this.peer.on('disconnected', () => {
         this.emit('disconnected')
-        setTimeout(() => {
-          if (this.peer && !this.peer.destroyed) this.peer.reconnect()
-        }, 2000)
+        this.startReconnectLoop()
       })
     })
+  }
+
+  /* ── Reconexão persistente ao servidor de sinalização ── */
+
+  /** Start a periodic reconnect loop. Stops automatically on success or destroy. */
+  private startReconnectLoop() {
+    if (this.reconnectTimer) return
+    console.warn('[SongShare] Disconnected from signaling server, retrying...')
+
+    // Try immediately
+    if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
+      try { this.peer.reconnect() } catch { /* noop */ }
+    }
+
+    // Then retry every 5 seconds until reconnected or destroyed
+    this.reconnectTimer = setInterval(() => {
+      if (!this.peer || this.peer.destroyed) {
+        this.stopReconnectLoop()
+        return
+      }
+      if (!this.peer.disconnected) {
+        this.stopReconnectLoop()
+        return
+      }
+      console.log('[SongShare] Retrying signaling connection...')
+      try { this.peer.reconnect() } catch { /* noop */ }
+    }, 5000)
+  }
+
+  /** Stop the reconnect loop. */
+  private stopReconnectLoop() {
+    if (this.reconnectTimer) {
+      clearInterval(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
   }
 
   /* ── Criar sala (host) ────────────────────────── */
@@ -164,8 +222,8 @@ export class PeerManager {
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Sala não encontrada ou host offline. Verifique o código.'))
-      }, 10000)
+        reject(new Error('Nao foi possivel conectar. Verifique o codigo e tente novamente.'))
+      }, 15000)
 
       const conn = this.peer!.connect(hostPeerId, { reliable: true })
 
@@ -217,35 +275,52 @@ export class PeerManager {
     })
   }
 
-  /** Listener: try to re-establish DataConnection to host. */
+  /** Listener: try to re-establish DataConnection to host. Retries persistently. */
   private _attemptReconnectToHost(hostPeerId: string) {
     // Don't try if we're no longer in a room
     if (!this.roomCode || !this.peer || this.peer.destroyed) return
 
-    console.warn('[SongShare] DataConnection lost, reconnecting to host...')
+    // Don't start a second reconnect if one is already running for this host
+    if (this._reconnectingToHost === hostPeerId) return
+    this._reconnectingToHost = hostPeerId
 
-    const maxAttempts = 5
+    console.warn('[SongShare] DataConnection to host lost, reconnecting...')
+
     let attempt = 0
 
     const tryConnect = () => {
-      if (!this.roomCode || !this.peer || this.peer.destroyed || this.peer.disconnected) return
-      if (this.connections.has(hostPeerId)) return // Already reconnected
-      if (attempt >= maxAttempts) {
-        console.error('[SongShare] Failed to reconnect after', maxAttempts, 'attempts')
-        this.emit('host-disconnected', {})
+      // Stop conditions: left room, destroyed, or already reconnected
+      if (!this.roomCode || !this.peer || this.peer.destroyed) {
+        this._reconnectingToHost = null
+        return
+      }
+      if (this.connections.has(hostPeerId)) {
+        console.log('[SongShare] DataConnection to host restored')
+        this._reconnectingToHost = null
+        return
+      }
+      // If signaling server itself is disconnected, wait for it to come back
+      // (the signaling reconnect loop will emit 'connected', which triggers _tryReconnectDataAfterSignaling)
+      if (this.peer.disconnected) {
+        attempt++
+        const delay = Math.min(5000 + attempt * 1000, 15000) // 5s–15s
+        console.log(`[SongShare] Signaling disconnected, waiting... (next try in ${delay / 1000}s)`)
+        setTimeout(tryConnect, delay)
         return
       }
 
       attempt++
-      console.log(`[SongShare] Reconnect attempt ${attempt}/${maxAttempts}`)
+      const backoff = Math.min(2000 * Math.pow(1.3, attempt - 1), 15000) // 2s–15s exponential
+
+      console.log(`[SongShare] DataConnection reconnect attempt ${attempt} (backoff ${Math.round(backoff / 1000)}s)`)
 
       try {
         const newConn = this.peer!.connect(hostPeerId, { reliable: true })
 
         const timeout = setTimeout(() => {
-          newConn.close()
-          setTimeout(tryConnect, 2000 * attempt) // Exponential backoff
-        }, 8000)
+          try { newConn.close() } catch { /* noop */ }
+          setTimeout(tryConnect, backoff)
+        }, 10000)
 
         newConn.on('open', () => {
           clearTimeout(timeout)
@@ -259,18 +334,19 @@ export class PeerManager {
             reconnecting: true,
           })
           console.log('[SongShare] Reconnected to host successfully')
+          this._reconnectingToHost = null
         })
 
         newConn.on('error', () => {
           clearTimeout(timeout)
-          setTimeout(tryConnect, 2000 * attempt)
+          setTimeout(tryConnect, backoff)
         })
 
         newConn.on('close', () => {
           clearTimeout(timeout)
         })
       } catch (e) {
-        setTimeout(tryConnect, 2000 * attempt)
+        setTimeout(tryConnect, backoff)
       }
     }
 
@@ -446,6 +522,8 @@ export class PeerManager {
   /* ── Cleanup ──────────────────────────────────── */
 
   destroy() {
+    this.stopReconnectLoop()
+    this._reconnectingToHost = null
     this.hangupAllMedia()
     this.connections.forEach((c) => { try { c.close() } catch { /* noop */ } })
     this.connections.clear()
