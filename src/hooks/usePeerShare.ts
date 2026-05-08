@@ -72,13 +72,6 @@ export function usePeerShare() {
   // store the host's time and receipt timestamp so the track-data-chunk completion handler
   // can calculate the correct start position when data finally arrives.
   const pendingPlayRef = useRef<{ hostTime: number; receivedAt: number } | null>(null)
-  // Threshold below which we don't apply latency compensation.
-  // When the host starts from near the beginning of a track (currentTime < threshold),
-  // the transit time represents network delay — not actual playback progress.
-  // Starting from the raw currentTime avoids skipping the song intro.
-  // The time-sync mechanism (every 1.5s) will correct any small residual drift
-  // via smooth playbackRate adjustment — no jarring hard-seeks.
-  const NO_COMPENSATE_THRESHOLD = 1.0 // seconds
 
   // ── Zustand selectors ────────────────────────────
   const room = useSongShareStore((s) => s.room)
@@ -505,11 +498,24 @@ export function usePeerShare() {
         }
         case 'next': {
           if (state.room.currentTrackIndex < state.room.playlist.length - 1) {
-            const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex + 1, currentTime: 0 }
+            const newIndex = state.room.currentTrackIndex + 1
+            const updated: RoomState = { ...state.room, currentTrackIndex: newIndex, currentTime: 0 }
             setRoom(updated)
+
+            // Set up audio BEFORE broadcasting — ensures host audio is in flight
+            // before guests receive the track-changed message
+            const track = updated.playlist[newIndex]
+            const url = track ? useSongShareStore.getState().audioCache.get(track.id) : null
+            if (audio && url) {
+              audio.src = url
+              audio.currentTime = 0
+              audio.playbackRate = 1.0
+              audio.play().catch(() => {})
+            }
+
             manager.broadcast({
               type: 'track-changed',
-              currentTrackIndex: updated.currentTrackIndex,
+              currentTrackIndex: newIndex,
               currentTime: 0,
               playlist: updated.playlist,
               sentAt: Date.now(),
@@ -522,11 +528,24 @@ export function usePeerShare() {
             audio.currentTime = 0
             manager.broadcast({ type: 'seek', time: 0, sentAt: Date.now() })
           } else if (state.room.currentTrackIndex > 0) {
-            const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex - 1, currentTime: 0 }
+            const newIndex = state.room.currentTrackIndex - 1
+            const updated: RoomState = { ...state.room, currentTrackIndex: newIndex, currentTime: 0 }
             setRoom(updated)
+
+            // Set up audio BEFORE broadcasting — ensures host audio is in flight
+            // before guests receive the track-changed message
+            const track = updated.playlist[newIndex]
+            const url = track ? useSongShareStore.getState().audioCache.get(track.id) : null
+            if (audio && url) {
+              audio.src = url
+              audio.currentTime = 0
+              audio.playbackRate = 1.0
+              audio.play().catch(() => {})
+            }
+
             manager.broadcast({
               type: 'track-changed',
-              currentTrackIndex: updated.currentTrackIndex,
+              currentTrackIndex: newIndex,
               currentTime: 0,
               playlist: updated.playlist,
               sentAt: Date.now(),
@@ -621,12 +640,10 @@ export function usePeerShare() {
     /* ─── Eventos de reprodução (ouvintes recebem) ─ */
 
     const unsubPlay = manager.on('play', (data: { currentTime: number; sentAt?: number }) => {
-      // Don't compensate when starting from the beginning of a track (< 1s).
-      // The host also started from ~0, so transit time is network delay, not playback progress.
-      // Starting from the raw time avoids skipping the song intro.
-      const compensated = data.currentTime < NO_COMPENSATE_THRESHOLD
-        ? data.currentTime
-        : compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+      // Always compensate for play — the host IS advancing during message transit.
+      // compensateTime(hostTime, sentAt) = hostTime + transit, which is where the host
+      // actually is when the guest receives the message.
+      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
 
       // Clear any previous pending play intent
       pendingPlayRef.current = null
@@ -655,10 +672,11 @@ export function usePeerShare() {
     })
 
     const unsubPause = manager.on('pause', (data: { currentTime: number; sentAt?: number }) => {
-      // Don't compensate when paused near the beginning — prevents drift on resume
-      const compensated = data.currentTime < NO_COMPENSATE_THRESHOLD
-        ? data.currentTime
-        : compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+      // NEVER compensate for pause — the host is STOPPED.
+      // During transit, the guest continued playing for ~transit ms extra.
+      // Seeking to the host's raw currentTime corrects this overshoot.
+      // (compensating would put the guest AHEAD since host doesn't advance)
+      const compensated = data.currentTime
       updateRoom({ isPlaying: false, currentTime: compensated })
       if (audioRef.current) {
         audioRef.current.currentTime = compensated
@@ -668,10 +686,8 @@ export function usePeerShare() {
     })
 
     const unsubSeek = manager.on('seek', (data: { time: number; sentAt?: number }) => {
-      // Don't compensate when seeking to the beginning — both host and guest should be at 0
-      const compensated = data.time < NO_COMPENSATE_THRESHOLD
-        ? data.time
-        : compensateTime(data.time, data.sentAt, latencyRef.current)
+      // Always compensate for seek — the host IS advancing during message transit.
+      const compensated = compensateTime(data.time, data.sentAt, latencyRef.current)
       updateRoom({ currentTime: compensated })
       if (audioRef.current) {
         audioRef.current.currentTime = compensated
@@ -707,12 +723,10 @@ export function usePeerShare() {
     })
 
     const unsubTrackChanged = manager.on('track-changed', (data: { currentTrackIndex: number; currentTime: number; playlist: Track[]; sentAt?: number }) => {
-      // Don't compensate for new tracks starting from the beginning.
-      // track-changed almost always sends currentTime: 0 (new track auto-advance).
-      // Without this fix, guests skip ~0.1-0.3s of every new song.
-      const compensated = data.currentTime < NO_COMPENSATE_THRESHOLD
-        ? data.currentTime
-        : compensateTime(data.currentTime, data.sentAt, latencyRef.current)
+      // Always compensate for track changes — the host IS advancing during message transit.
+      // The host now sets up audio BEFORE broadcasting (see onEnded, nextTrack, previousTrack),
+      // so the audio is already playing when the message is sent — full compensation is safe.
+      const compensated = compensateTime(data.currentTime, data.sentAt, latencyRef.current)
 
       // Clear any pending play intent — track-changed supersedes it
       pendingPlayRef.current = null
@@ -996,11 +1010,30 @@ export function usePeerShare() {
         const st = useSongShareStore.getState()
         if (!st.room) return
         if (st.room.currentTrackIndex < st.room.playlist.length - 1) {
-          const updated = { ...st.room, currentTrackIndex: st.room.currentTrackIndex + 1, currentTime: 0 }
+          const newIndex = st.room.currentTrackIndex + 1
+          const updated = { ...st.room, currentTrackIndex: newIndex, currentTime: 0 }
           useSongShareStore.getState().setRoom(updated)
+
+          // CRITICAL: Set up audio BEFORE broadcasting to guests.
+          // Previously, the broadcast went out first and the React useEffect
+          // set up audio later (~16-50ms delay). This meant the host hadn't
+          // started playing when the message was sent, causing guests to be
+          // ahead when full compensation was applied. By setting up audio
+          // synchronously here, the audio.play() call is in flight before the
+          // broadcast — guests receive the message after the host's audio has
+          // (or is about to) start, making full latency compensation accurate.
+          const nextTrack = updated.playlist[newIndex]
+          const url = nextTrack ? useSongShareStore.getState().audioCache.get(nextTrack.id) : null
+          if (audio && url) {
+            audio.src = url
+            audio.currentTime = 0
+            audio.playbackRate = 1.0
+            audio.play().catch(() => {})
+          }
+
           mgr.broadcast({
             type: 'track-changed',
-            currentTrackIndex: updated.currentTrackIndex,
+            currentTrackIndex: newIndex,
             currentTime: 0,
             playlist: updated.playlist,
             sentAt: Date.now(),
@@ -1274,11 +1307,25 @@ export function usePeerShare() {
     if (!manager.isHost || !state.room) return
 
     if (state.room.currentTrackIndex < state.room.playlist.length - 1) {
-      const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex + 1, currentTime: 0 }
+      const newIndex = state.room.currentTrackIndex + 1
+      const updated: RoomState = { ...state.room, currentTrackIndex: newIndex, currentTime: 0 }
       setRoom(updated)
+
+      // Set up audio BEFORE broadcasting — ensures host audio is in flight
+      // before guests receive the track-changed message
+      const track = updated.playlist[newIndex]
+      const url = track ? useSongShareStore.getState().audioCache.get(track.id) : null
+      const audio = audioRef.current
+      if (audio && url) {
+        audio.src = url
+        audio.currentTime = 0
+        audio.playbackRate = 1.0
+        audio.play().catch(() => {})
+      }
+
       manager.broadcast({
         type: 'track-changed',
-        currentTrackIndex: updated.currentTrackIndex,
+        currentTrackIndex: newIndex,
         currentTime: 0,
         playlist: updated.playlist,
         sentAt: Date.now(),
@@ -1300,11 +1347,24 @@ export function usePeerShare() {
       audio.currentTime = 0
       manager.broadcast({ type: 'seek', time: 0, sentAt: Date.now() })
     } else if (state.room.currentTrackIndex > 0) {
-      const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex - 1, currentTime: 0 }
+      const newIndex = state.room.currentTrackIndex - 1
+      const updated: RoomState = { ...state.room, currentTrackIndex: newIndex, currentTime: 0 }
       setRoom(updated)
+
+      // Set up audio BEFORE broadcasting — ensures host audio is in flight
+      // before guests receive the track-changed message
+      const track = updated.playlist[newIndex]
+      const url = track ? useSongShareStore.getState().audioCache.get(track.id) : null
+      if (audio && url) {
+        audio.src = url
+        audio.currentTime = 0
+        audio.playbackRate = 1.0
+        audio.play().catch(() => {})
+      }
+
       manager.broadcast({
         type: 'track-changed',
-        currentTrackIndex: updated.currentTrackIndex,
+        currentTrackIndex: newIndex,
         currentTime: 0,
         playlist: updated.playlist,
         sentAt: Date.now(),
