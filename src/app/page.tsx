@@ -1,6 +1,5 @@
 'use client'
 
-import { useCallback } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSongShareStore } from '@/store/songshare'
 import { usePeerShare } from '@/hooks/usePeerShare'
@@ -8,7 +7,7 @@ import { LandingScreen } from '@/components/songshare/LandingScreen'
 import { RoomScreen } from '@/components/songshare/RoomScreen'
 
 export default function Home() {
-  const { phase, isConnected, isDragOver, setIsDragOver, reset } =
+  const { phase, isConnected, isDragOver, setIsDragOver } =
     useSongShareStore()
 
   const {
@@ -22,23 +21,13 @@ export default function Home() {
     seek,
     nextTrack,
     previousTrack,
-    requestPlayback,
     sendChatMessage,
     updateTrackLyrics,
     toggleMic,
     toggleMute,
     setPeerVolume,
-    resyncIsConnected,
     leaveRoom,
   } = usePeerShare()
-
-  const handleLeave = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.src = ''
-    }
-    leaveRoom()
-  }, [audioRef, leaveRoom])
 
   return (
     <AnimatePresence mode="wait">
@@ -71,7 +60,6 @@ export default function Home() {
             onSeek={seek}
             onNext={nextTrack}
             onPrevious={previousTrack}
-            onRequestPlayback={requestPlayback}
             onAddTrack={addTrack}
             onRemoveTrack={removeTrack}
             onSendMessage={sendChatMessage}
@@ -79,7 +67,7 @@ export default function Home() {
             onToggleMic={toggleMic}
             onToggleMute={toggleMute}
             onSetPeerVolume={setPeerVolume}
-            onLeave={handleLeave}
+            onLeave={leaveRoom}
             isDragOver={isDragOver}
             setIsDragOver={setIsDragOver}
           />

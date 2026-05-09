@@ -31,6 +31,12 @@ export function MusicPlayer({
   const [volume, setVolume] = useState(1)
   // Smooth progress: read audio.currentTime directly via rAF (no Zustand re-renders)
   const [smoothTime, setSmoothTime] = useState(0)
+  // Track actual audio playing state for the play/pause button.
+  // For the host we use room.isPlaying (source of truth).
+  // For guests we use the actual audio element state so that local
+  // play/pause/seek actions are reflected immediately without being
+  // overridden by incoming host sync events.
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false)
   const rafRef = useRef<number>(0)
 
   const isHost = room?.hostId === socket?.id
@@ -38,11 +44,13 @@ export function MusicPlayer({
     ? room.playlist[room.currentTrackIndex]
     : null
 
+  // Whether to show Play or Pause: host uses room state, guest uses actual audio
+  const showPlaying = isHost ? (room?.isPlaying ?? false) : isAudioPlaying
+
   const hasSyncedLyrics = currentTrack?.lyrics ? isLrcFormat(currentTrack.lyrics) : false
 
   // rAF loop reads audio element directly for smooth progress (~10fps)
-  // This avoids updating Zustand store on every timeupdate, preventing
-  // all room subscribers from re-rendering 4x/sec
+  // Also tracks actual audio playing state for guests' play/pause button
   useEffect(() => {
     let active = true
     let lastUpdate = 0
@@ -51,7 +59,11 @@ export function MusicPlayer({
       const now = performance.now()
       if (now - lastUpdate >= 100) {
         lastUpdate = now
-        setSmoothTime(audioRef.current?.currentTime ?? 0)
+        const audio = audioRef.current
+        if (audio) {
+          setSmoothTime(audio.currentTime)
+          setIsAudioPlaying(!audio.paused && !audio.ended)
+        }
       }
       rafRef.current = requestAnimationFrame(tick)
     }
@@ -85,7 +97,7 @@ export function MusicPlayer({
     }
   }, [audioRef, isMuted])
 
-  // Volume popup state — toggle-based, closes on outside tap
+  // Volume popup state
   const [showVolume, setShowVolume] = useState(false)
   const volumePopupRef = useRef<HTMLDivElement>(null)
   const volumeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -123,7 +135,6 @@ export function MusicPlayer({
       }
     }
 
-    // Delay adding listener to avoid immediate close from the toggle click
     const timer = setTimeout(() => {
       document.addEventListener('mousedown', handleClickOutside)
       document.addEventListener('touchstart', handleClickOutside, { passive: true })
@@ -157,7 +168,7 @@ export function MusicPlayer({
             {currentTrack?.artist || 'Adicione musicas para comecar'}
           </p>
         </div>
-        {/* Volume — integrated on the right side of now playing info */}
+        {/* Volume */}
         <div ref={volumePopupRef} className="relative flex-shrink-0">
           <Button
             variant="ghost"
@@ -216,7 +227,7 @@ export function MusicPlayer({
         </div>
       </div>
 
-      {/* Progress bar — enabled for both host and guests */}
+      {/* Progress bar */}
       <div className="space-y-1 mb-2 sm:mb-3">
         <Slider
           value={[smoothTime]}
@@ -232,7 +243,7 @@ export function MusicPlayer({
         </div>
       </div>
 
-      {/* Transport controls — enabled for both host and guests */}
+      {/* Transport controls */}
       <div className="flex items-center justify-center gap-5 sm:gap-3">
         <Button
           variant="ghost"
@@ -246,15 +257,11 @@ export function MusicPlayer({
 
         <Button
           size="icon"
-          onClick={room?.isPlaying ? onPause : onPlay}
+          onClick={showPlaying ? onPause : onPlay}
           disabled={!currentTrack}
           className="h-14 w-14 sm:h-14 sm:w-14 rounded-full bg-white text-zinc-900 hover:bg-zinc-200 shadow-lg shadow-white/10 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
         >
-          {room?.isPlaying ? (
-            <Pause className="w-6 h-6 sm:w-6 sm:h-6" />
-          ) : (
-            <Play className="w-6 h-6 sm:w-6 sm:h-6 ml-0.5" />
-          )}
+          {showPlaying ? <Pause className="w-6 h-6 sm:w-6 sm:h-6" /> : <Play className="w-6 h-6 sm:w-6 sm:h-6 ml-0.5" />}
         </Button>
 
         <Button
@@ -270,7 +277,7 @@ export function MusicPlayer({
 
       {!isHost && currentTrack && (
         <p className="text-[10px] text-zinc-600 text-center mt-1.5">
-          Controle local — use para ajustar sua reproducao
+          Suas alteracoes sincronizam com todos os usuarios
         </p>
       )}
     </div>

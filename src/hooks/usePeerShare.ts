@@ -25,8 +25,6 @@ export function usePeerShare() {
   // Track the intended start time for the current track (fixes sync on track change)
   const intendedStartTimeRef = useRef<number>(0)
   const lastTrackChangeIdRef = useRef<string>('')
-  // When a guest takes local control, ignore host sync events for a cooldown period
-  const guestLocalOverrideUntilRef = useRef<number>(0)
 
   // ── Zustand selectors ────────────────────────────
   const room = useSongShareStore((s) => s.room)
@@ -95,8 +93,13 @@ export function usePeerShare() {
   const processIncomingStream = useCallback((peerId: string, remoteStream: MediaStream) => {
     const store = useSongShareStore.getState()
 
-    // Don't add if already exists
-    if (store.voiceStreams.has(peerId)) return
+    // If stream already exists for this peer, clean up the old one first.
+    // This handles the case where signaling dropped, the 'close' event never
+    // arrived, and the peer is now re-calling with a fresh MediaConnection.
+    if (store.voiceStreams.has(peerId)) {
+      store.removeVoiceStream(peerId)
+      stopSpeakingDetection(peerId)
+    }
 
     // Use native <audio> element for output (avoids browser muting WebRTC tracks
     // when routed through AudioContext.destination)
@@ -417,8 +420,6 @@ export function usePeerShare() {
     /* ─── Eventos de reprodução (ouvintes recebem) ─ */
 
     const unsubPlay = manager.on('play', (data: { currentTime: number }) => {
-      // If guest has taken local control recently, don't override
-      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ isPlaying: true, currentTime: data.currentTime })
       const audio = audioRef.current
       if (audio) {
@@ -428,22 +429,16 @@ export function usePeerShare() {
     })
 
     const unsubPause = manager.on('pause', (data: { currentTime: number }) => {
-      // If guest has taken local control recently, don't override
-      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ isPlaying: false, currentTime: data.currentTime })
       audioRef.current?.pause()
     })
 
     const unsubSeek = manager.on('seek', (data: { time: number }) => {
-      // If guest has taken local control recently, don't override
-      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ currentTime: data.time })
       if (audioRef.current) audioRef.current.currentTime = data.time
     })
 
     const unsubSync = manager.on('time-sync', (data: { currentTime: number }) => {
-      // If guest has taken local control recently, don't override
-      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ currentTime: data.currentTime })
       const audio = audioRef.current
       if (audio && !audio.paused && Math.abs(audio.currentTime - data.currentTime) > 2) {
@@ -583,6 +578,74 @@ export function usePeerShare() {
         .catch(console.error)
     })
 
+    /* ─── Guest playback control requests (host receives) ─ */
+
+    const unsubRequestPlay = manager.on('request-play', () => {
+      if (!manager.isHost) return
+      const audio = audioRef.current
+      if (!audio) return
+      audio.play().catch(() => {})
+      updateRoom({ isPlaying: true })
+      manager.broadcast({ type: 'play', currentTime: audio.currentTime })
+    })
+
+    const unsubRequestPause = manager.on('request-pause', () => {
+      if (!manager.isHost) return
+      const audio = audioRef.current
+      if (!audio) return
+      audio.pause()
+      updateRoom({ isPlaying: false })
+      manager.broadcast({ type: 'pause', currentTime: audio.currentTime })
+    })
+
+    const unsubRequestSeek = manager.on('request-seek', (data: { time: number }) => {
+      if (!manager.isHost) return
+      if (audioRef.current) audioRef.current.currentTime = data.time
+      manager.broadcast({ type: 'seek', time: data.time })
+    })
+
+    const unsubRequestNext = manager.on('request-next', () => {
+      if (!manager.isHost) return
+      const st = useSongShareStore.getState()
+      if (!st.room) return
+
+      if (st.room.currentTrackIndex < st.room.playlist.length - 1) {
+        const updated: RoomState = { ...st.room, currentTrackIndex: st.room.currentTrackIndex + 1, currentTime: 0 }
+        useSongShareStore.getState().setRoom(updated)
+        manager.broadcast({
+          type: 'track-changed',
+          currentTrackIndex: updated.currentTrackIndex,
+          currentTime: 0,
+          playlist: updated.playlist,
+        })
+      } else {
+        const updated: RoomState = { ...st.room, isPlaying: false, currentTime: 0 }
+        useSongShareStore.getState().setRoom(updated)
+        manager.broadcast({ type: 'playlist-ended' })
+      }
+    })
+
+    const unsubRequestPrevious = manager.on('request-previous', () => {
+      if (!manager.isHost) return
+      const st = useSongShareStore.getState()
+      if (!st.room) return
+
+      const audio = audioRef.current
+      if (audio && audio.currentTime > 3) {
+        audio.currentTime = 0
+        manager.broadcast({ type: 'seek', time: 0 })
+      } else if (st.room.currentTrackIndex > 0) {
+        const updated: RoomState = { ...st.room, currentTrackIndex: st.room.currentTrackIndex - 1, currentTime: 0 }
+        useSongShareStore.getState().setRoom(updated)
+        manager.broadcast({
+          type: 'track-changed',
+          currentTrackIndex: updated.currentTrackIndex,
+          currentTime: 0,
+          playlist: updated.playlist,
+        })
+      }
+    })
+
     /* ─── Chat ──────────────────────────────────── */
 
     const unsubChat = manager.on('chat-message', (data: { message: ChatMessage } | ChatMessage) => {
@@ -608,6 +671,8 @@ export function usePeerShare() {
         unsubTrackChanged, unsubEnded, unsubPlaylist,
         unsubLyrics,
         unsubChunk, unsubReqData, unsubChat,
+        unsubRequestPlay, unsubRequestPause, unsubRequestSeek,
+        unsubRequestNext, unsubRequestPrevious,
         unsubConnected, unsubDisconnected,
       ].forEach((fn) => fn?.())
 
@@ -869,91 +934,98 @@ export function usePeerShare() {
 
   const play = useCallback(() => {
     const manager = managerRef.current!
-    const state = useSongShareStore.getState()
     const audio = audioRef.current
-    const currentTime = audio?.currentTime || 0
 
     if (manager.isHost) {
+      const currentTime = audio?.currentTime || 0
       audio?.play().catch(() => {})
       updateRoom({ isPlaying: true })
       manager.broadcast({ type: 'play', currentTime })
     } else {
-      // Guest: local control — set override to prevent host sync from fighting
-      guestLocalOverrideUntilRef.current = Date.now() + 5000
+      // Guest: play locally for immediate feedback, then request host to sync everyone
       audio?.play().catch(() => {})
+      manager.sendToHost({ type: 'request-play' })
     }
   }, [updateRoom])
 
   const pause = useCallback(() => {
     const manager = managerRef.current!
-    const state = useSongShareStore.getState()
     const audio = audioRef.current
-    const currentTime = audio?.currentTime || 0
 
     if (manager.isHost) {
+      const currentTime = audio?.currentTime || 0
       audio?.pause()
       updateRoom({ isPlaying: false })
       manager.broadcast({ type: 'pause', currentTime })
     } else {
-      // Guest: local control — set override to prevent host sync from fighting
-      guestLocalOverrideUntilRef.current = Date.now() + 5000
+      // Guest: pause locally for immediate feedback, then request host to sync everyone
       audio?.pause()
+      manager.sendToHost({ type: 'request-pause' })
     }
   }, [updateRoom])
 
   const seek = useCallback((time: number) => {
     const manager = managerRef.current!
-    const state = useSongShareStore.getState()
 
     if (manager.isHost) {
       if (audioRef.current) audioRef.current.currentTime = time
       manager.broadcast({ type: 'seek', time })
     } else {
-      // Guest: local control — set override to prevent host sync from fighting
-      guestLocalOverrideUntilRef.current = Date.now() + 5000
+      // Guest: seek locally for immediate feedback, then request host to sync everyone
       if (audioRef.current) audioRef.current.currentTime = time
+      manager.sendToHost({ type: 'request-seek', time })
     }
   }, [])
 
   const nextTrack = useCallback(() => {
     const manager = managerRef.current!
     const state = useSongShareStore.getState()
-    if (!manager.isHost || !state.room) return
+    if (!state.room) return
 
-    if (state.room.currentTrackIndex < state.room.playlist.length - 1) {
-      const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex + 1, currentTime: 0 }
-      setRoom(updated)
-      manager.broadcast({
-        type: 'track-changed',
-        currentTrackIndex: updated.currentTrackIndex,
-        currentTime: 0,
-        playlist: updated.playlist,
-      })
+    if (manager.isHost) {
+      if (state.room.currentTrackIndex < state.room.playlist.length - 1) {
+        const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex + 1, currentTime: 0 }
+        setRoom(updated)
+        manager.broadcast({
+          type: 'track-changed',
+          currentTrackIndex: updated.currentTrackIndex,
+          currentTime: 0,
+          playlist: updated.playlist,
+        })
+      } else {
+        const updated: RoomState = { ...state.room, isPlaying: false, currentTime: 0 }
+        setRoom(updated)
+        manager.broadcast({ type: 'playlist-ended' })
+      }
     } else {
-      const updated: RoomState = { ...state.room, isPlaying: false, currentTime: 0 }
-      setRoom(updated)
-      manager.broadcast({ type: 'playlist-ended' })
+      // Guest: request host to change track
+      manager.sendToHost({ type: 'request-next' })
     }
   }, [setRoom])
 
   const previousTrack = useCallback(() => {
     const manager = managerRef.current!
     const state = useSongShareStore.getState()
-    if (!manager.isHost || !state.room) return
+    if (!state.room) return
 
-    const audio = audioRef.current
-    if (audio && audio.currentTime > 3) {
-      audio.currentTime = 0
-      manager.broadcast({ type: 'seek', time: 0 })
-    } else if (state.room.currentTrackIndex > 0) {
-      const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex - 1, currentTime: 0 }
-      setRoom(updated)
-      manager.broadcast({
-        type: 'track-changed',
-        currentTrackIndex: updated.currentTrackIndex,
-        currentTime: 0,
-        playlist: updated.playlist,
-      })
+    if (manager.isHost) {
+      const audio = audioRef.current
+      if (audio && audio.currentTime > 3) {
+        audio.currentTime = 0
+        manager.broadcast({ type: 'seek', time: 0 })
+      } else if (state.room.currentTrackIndex > 0) {
+        const updated: RoomState = { ...state.room, currentTrackIndex: state.room.currentTrackIndex - 1, currentTime: 0 }
+        setRoom(updated)
+        manager.broadcast({
+          type: 'track-changed',
+          currentTrackIndex: updated.currentTrackIndex,
+          currentTime: 0,
+          playlist: updated.playlist,
+        })
+      }
+    } else {
+      // Guest: request host to change track
+      manager.sendToHost({ type: 'request-previous' })
     }
   }, [setRoom])
 
@@ -1155,9 +1227,6 @@ export function usePeerShare() {
       clearInterval(timeSyncRef.current)
       timeSyncRef.current = null
     }
-
-    // Clear guest local override
-    guestLocalOverrideUntilRef.current = 0
 
     // Disconnect peer manager
     if (manager) {

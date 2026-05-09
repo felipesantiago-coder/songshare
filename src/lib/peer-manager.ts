@@ -39,7 +39,6 @@ export class PeerManager {
   private handlers = new Map<string, Set<Handler>>()
   private reconnectTimer: ReturnType<typeof setInterval> | null = null
   private _reconnectingToHost: string | null = null
-  private _iceServers: Array<{ urls: string; username?: string; credential?: string }> = []
 
   /* ── EventEmitter ─────────────────────────────── */
 
@@ -63,37 +62,13 @@ export class PeerManager {
 
   /* ── Conexão ao servidor de sinalização ──────── */
 
-  /** Fetch ICE servers (STUN + TURN) from our server-side API route. */
-  private async _fetchIceServers(): Promise<Array<{ urls: string; username?: string; credential?: string }>> {
-    try {
-      const res = await fetch('/api/turn-credentials')
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      const servers = data.iceServers
-      if (Array.isArray(servers) && servers.length > 0) {
-        console.log('[SongShare] ICE servers loaded (source:', data.source || 'unknown', ')')
-        return servers
-      }
-      throw new Error('Empty ICE servers array')
-    } catch (err) {
-      console.error('[SongShare] Failed to fetch ICE servers, using Google STUN fallback:', err)
-      // Minimal fallback — STUN only, no TURN (voice may fail for symmetric NAT users)
-      return [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-      ]
-    }
-  }
-
   /** Cria peer com ID aleatório (usado ao montar o app). Retries automatically. */
   async connect(maxRetries = 2): Promise<void> {
     this.destroy()
-    this._iceServers = await this._fetchIceServers()
     let lastError: any
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        await this._createPeer(undefined)
+        await this._createPeer()
         return
       } catch (err) {
         lastError = err
@@ -115,14 +90,11 @@ export class PeerManager {
       this.peer = new Peer(peerId, {
         debug: 0,
         config: {
-          iceServers: this._iceServers.length > 0
-            ? this._iceServers
-            : [
-                // STUN servers — discover public IP/port for NAT traversal
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-              ],
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+          ],
         },
       })
 
@@ -402,21 +374,14 @@ export class PeerManager {
           this.emit('user-left-request', { ...data, peerId: senderPeerId })
         }
         break
-      case 'ping':
+      // Guest playback control requests — only the host should handle these
+      case 'request-play':
+      case 'request-pause':
+      case 'request-seek':
+      case 'request-next':
+      case 'request-previous':
         if (this.isHost) {
-          this.emit('ping', { t1: data.t1, peerId: senderPeerId })
-        }
-        break
-      case 'voice-state-update':
-        if (this.isHost) {
-          // Include senderPeerId so host can exclude the original sender from broadcast
-          this.emit('voice-state-update', { ...data, senderPeerId })
-        }
-        break
-      case 'playback-request':
-        if (this.isHost) {
-          // Listener requests host to execute a playback action (play/pause/seek/next/previous)
-          this.emit('playback-request', { ...data, senderPeerId })
+          this.emit(data.type, { ...data, senderPeerId })
         }
         break
       default: {
@@ -481,93 +446,23 @@ export class PeerManager {
   callWithStream(peerId: string, stream: MediaStream): MediaConnection | null {
     if (!this.peer || this.peer.destroyed) return null
 
-    // Don't call if signaling server is disconnected — the call signal would be lost
-    if (this.peer.disconnected) {
-      console.warn('[SongShare] callWithStream: peer disconnected from signaling, cannot call', peerId)
-      return null
-    }
-
     // Não chamar a si mesmo
     if (peerId === this.peer?.id) return null
 
-    // Não duplicar chamada existente — but check if it's still alive!
+    // If an existing call to this peer exists, close it first.
+    // This handles the case where signaling dropped and we're re-calling
+    // with a fresh MediaConnection after toggling mic off/on.
     const existing = this.mediaCalls.get(peerId)
     if (existing) {
-      if ((existing as any).open) return existing
-      // Stale/zombie connection — clean up and create a fresh one
-      console.warn('[SongShare] callWithStream: replacing stale media call to', peerId)
       try { existing.close() } catch { /* noop */ }
       this.mediaCalls.delete(peerId)
     }
 
     try {
       const call = this.peer.call(peerId, stream)
-      if (!call) {
-        console.warn('[SongShare] callWithStream: peer.call returned null for', peerId)
-        return null
-      }
+      if (!call) return null
 
       this.mediaCalls.set(peerId, call)
-
-      // CRITICAL: Listen for the remote peer's stream on OUTGOING calls.
-      // When A calls B, B's audio arrives on A's outgoing MediaConnection's 'stream' event.
-      // Previously this was only handled for INCOMING calls (the 'incoming-call' event),
-      // which meant A could never hear B from the outgoing call direction.
-      call.on('stream', (remoteStream: MediaStream) => {
-        if (remoteStream && remoteStream instanceof MediaStream) {
-          console.log('[SongShare] Outgoing call: received remote stream from', peerId,
-            '— tracks:', remoteStream.getAudioTracks().length)
-          this.emit('remote-stream', { peerId, stream: remoteStream })
-        } else {
-          console.warn('[SongShare] Outgoing call: received invalid stream from', peerId)
-        }
-      })
-
-      // Fallback: if PeerJS's 'stream' event fires with undefined (evt.streams[0] is empty),
-      // listen directly on the RTCPeerConnection for the track event.
-      setTimeout(() => {
-        const pc = (call as any).peerConnection as RTCPeerConnection | undefined
-        if (pc) {
-          const trackHandler = (ev: Event) => {
-            const trackEvent = ev as RTCTrackEvent
-            if (trackEvent.streams && trackEvent.streams.length > 0) {
-              const stream = trackEvent.streams[0]
-              if (stream instanceof MediaStream) {
-                this.emit('remote-stream', { peerId, stream })
-              }
-            } else if (trackEvent.track?.kind === 'audio') {
-              this.emit('remote-stream', { peerId, stream: new MediaStream([trackEvent.track]) })
-            }
-          }
-          pc.addEventListener('track', trackHandler)
-          // Clean up when call closes
-          call.on('close', () => pc.removeEventListener('track', trackHandler))
-
-          // Monitor ICE state + RTP stats for outgoing voice calls
-          pc.oniceconnectionstatechange = () => {
-            const state = pc.iceConnectionState
-            console.log('[SongShare] ICE state change for outgoing call to', peerId, ':', state)
-            if (state === 'connected' || state === 'completed') {
-              setTimeout(() => {
-                pc.getStats().then((stats) => {
-                  stats.forEach((report) => {
-                    if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-                      console.log('[SongShare] Voice RTP stats (incoming) from', peerId,
-                        ': packetsReceived=' + report.packetsReceived,
-                        'bytesReceived=' + report.bytesReceived)
-                    }
-                    if (report.type === 'outbound-rtp' && report.kind === 'audio') {
-                      console.log('[SongShare] Voice RTP stats (outgoing) to', peerId,
-                        ': packetsSent=' + report.packetsSent,
-                        'bytesSent=' + report.bytesSent)
-                    }
-                  })
-                }).catch(() => {})
-              }, 3000)
-            }
-          }
-        }
-      }, 0)
 
       call.on('error', (err) => {
         console.error('[SongShare] Media call error:', err)
