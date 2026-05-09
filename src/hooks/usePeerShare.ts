@@ -121,8 +121,8 @@ export function usePeerShare() {
   }, [])
 
   // ── Voice helper: process incoming voice stream ───────
-  // Creates a SINGLE AudioContext per remote peer for both audio output AND
-  // speaking detection — avoids the browser limit of ~6 concurrent AudioContexts.
+  // Uses a native <audio> element for audio output (reliable, handles track state changes)
+  // and a separate AudioContext ONLY for speaking detection (analyser).
   const processIncomingStream = useCallback((peerId: string, remoteStream: MediaStream) => {
     const store = useSongShareStore.getState()
 
@@ -140,88 +140,85 @@ export function usePeerShare() {
       console.log('[SongShare] processIncomingStream: processing voice from', peerId,
         '— tracks:', audioTracks.length, audioTracks.map((t) => `${t.kind} [ready=${t.readyState}, enabled=${t.enabled}]`).join(', '))
 
-      // Single shared AudioContext for this peer
-      const audioContext = new AudioContext()
-
-      // ROBUST RESUME STRATEGY — AudioContext created outside user gesture
-      // starts 'suspended' in Chrome 71+/Safari/iOS. Three-pronged approach:
-      // 1. Immediate resume attempt
-      // 2. Periodic retry every 500ms for 5 seconds
-      // 3. User-interaction listener as last resort
-      const tryResume = () => {
-        if (audioContext.state === 'running') return
-        audioContext.resume().catch(() => {})
+      // ── Audio OUTPUT: native <audio> element ──
+      // The browser's native audio pipeline handles track state, autoplay, and codec
+      // negotiation much more reliably than Web Audio API (AudioContext → destination).
+      // This avoids the "track muted" issue where WebRTC mutes the track before it
+      // reaches the AudioContext's destination.
+      const audioElement = document.createElement('audio')
+      audioElement.srcObject = remoteStream
+      audioElement.autoplay = true
+      audioElement.volume = 1.0
+      // Ensure the audio element plays (handles autoplay policy)
+      const playPromise = audioElement.play()
+      if (playPromise) {
+        playPromise.catch(() => {
+          // Autoplay blocked — will play on next user interaction
+          console.warn('[SongShare] Autoplay blocked for voice from', peerId)
+          const resumeOnInteraction = () => {
+            audioElement.play().catch(() => {})
+            document.removeEventListener('click', resumeOnInteraction)
+            document.removeEventListener('touchstart', resumeOnInteraction)
+          }
+          document.addEventListener('click', resumeOnInteraction, { once: true })
+          document.addEventListener('touchstart', resumeOnInteraction, { once: true })
+        })
       }
-      tryResume()
-      const resumeInterval = setInterval(() => {
-        if (audioContext.state === 'running') clearInterval(resumeInterval)
-        else tryResume()
-      }, 500)
-      setTimeout(() => clearInterval(resumeInterval), 5000)
 
-      // Register user-interaction listeners that retry resume on any click/touch/keypress.
-      // Stored in peerAudioCleanupRef so stopSpeakingDetection can remove them.
-      const resumeOnInteraction = () => tryResume()
-      document.addEventListener('click', resumeOnInteraction, { passive: true })
-      document.addEventListener('touchstart', resumeOnInteraction, { passive: true })
-      document.addEventListener('keydown', resumeOnInteraction, { passive: true })
-      peerAudioCleanupRef.current.set(peerId, () => {
-        clearInterval(resumeInterval)
-        document.removeEventListener('click', resumeOnInteraction)
-        document.removeEventListener('touchstart', resumeOnInteraction)
-        document.removeEventListener('keydown', resumeOnInteraction)
-      })
+      // ── Speaking DETECTION: separate AudioContext (NOT connected to output) ──
+      let analysisContext: AudioContext | undefined
+      let analyser: AnalyserNode | undefined
 
-      const source = audioContext.createMediaStreamSource(remoteStream)
+      try {
+        analysisContext = new AudioContext()
+        analysisContext.resume().catch(() => {})
 
-      // Output chain: source → gainNode → speakers
-      const gainNode = audioContext.createGain()
-      gainNode.gain.value = 1.0 // default volume
-      source.connect(gainNode)
-      gainNode.connect(audioContext.destination)
+        const source = analysisContext.createMediaStreamSource(remoteStream)
+        analyser = analysisContext.createAnalyser()
+        analyser.fftSize = 512
+        analyser.smoothingTimeConstant = 0.8
+        source.connect(analyser)
 
-      // Analysis chain: source → analyser (NOT connected to output — just reads data)
-      const analyser = audioContext.createAnalyser()
-      analyser.fftSize = 512
-      analyser.smoothingTimeConstant = 0.8
-      source.connect(analyser)
+        const dataArray = new Uint8Array(analyser.frequencyBinCount)
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+        const interval = setInterval(() => {
+          analyser!.getByteFrequencyData(dataArray)
+          let sum = 0
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i]
+          }
+          const average = sum / dataArray.length / 255
+          setVoiceStreamSpeaking(peerId, average > SPEAKING_THRESHOLD)
+        }, 150)
 
-      const interval = setInterval(() => {
-        analyser.getByteFrequencyData(dataArray)
-        let sum = 0
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i]
-        }
-        const average = sum / dataArray.length / 255
-        setVoiceStreamSpeaking(peerId, average > SPEAKING_THRESHOLD)
-      }, 150)
-
-      speakingIntervalsRef.current.set(peerId, interval)
+        speakingIntervalsRef.current.set(peerId, interval)
+      } catch (err) {
+        console.warn('[SongShare] Could not create speaking detection for', peerId, ':', err)
+      }
 
       const info: VoiceStreamInfo = {
         stream: remoteStream,
-        audioContext,
-        gainNode,
+        audioElement,
+        analyser,
+        analysisContext,
         volume: 1.0,
         isSpeaking: false,
       }
 
       store.addVoiceStream(peerId, info)
-      // ── Audio output verification ──
-      // Log AudioContext state AFTER a short delay to confirm it stays running
+
+      // ── Verification ──
       setTimeout(() => {
         const track = remoteStream.getAudioTracks()[0]
-        console.log('[SongShare] Voice verify for', peerId, '— AC state:', audioContext.state,
-          'gain:', gainNode.gain.value,
+        console.log('[SongShare] Voice verify for', peerId,
+          '— audioEl paused:', audioElement.paused,
+          'audioEl volume:', audioElement.volume,
           'track enabled:', track?.enabled,
           'track readyState:', track?.readyState,
           'track muted:', track?.muted)
-      }, 2000)
+      }, 3000)
 
-      console.log('[SongShare] Voice stream from', peerId, 'added — AudioContext state:', audioContext.state,
-        'gain:', gainNode.gain.value)
+      console.log('[SongShare] Voice stream from', peerId, 'added — audio element autoplay:', !audioElement.paused)
     } catch (err) {
       console.error('[SongShare] processIncomingStream error for', peerId, ':', err)
     }

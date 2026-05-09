@@ -3,8 +3,9 @@ import { create } from 'zustand'
 // ─── Types ──────────────────────────────────────────────
 export interface VoiceStreamInfo {
   stream: MediaStream
-  audioContext: AudioContext
-  gainNode: GainNode
+  audioElement: HTMLAudioElement
+  analyser?: AnalyserNode
+  analysisContext?: AudioContext
   volume: number
   isSpeaking: boolean
 }
@@ -259,7 +260,7 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
     set((state) => {
       const info = state.voiceStreams.get(peerId)
       if (!info) return state // Defensive: no crash if peer doesn't exist
-      info.gainNode.gain.value = volume
+      info.audioElement.volume = volume
       const newMap = new Map(state.voiceStreams)
       newMap.set(peerId, { ...info, volume })
       return { voiceStreams: newMap }
@@ -275,9 +276,9 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
   clearVoiceStreams: () => {
     const streams = get().voiceStreams
     streams.forEach((info) => {
-      info.gainNode.disconnect()
-      info.audioContext.close().catch(() => {})
-      info.stream.getTracks().forEach((t) => t.stop())
+      info.audioElement.pause()
+      info.audioElement.srcObject = null
+      info.analysisContext?.close().catch(() => {})
     })
     set({ voiceStreams: new Map() })
   },
@@ -298,9 +299,9 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
   reset: () => {
     const streams = get().voiceStreams
     streams.forEach((info) => {
-      info.gainNode.disconnect()
-      info.audioContext.close().catch(() => {})
-      info.stream.getTracks().forEach((t) => t.stop())
+      info.audioElement.pause()
+      info.audioElement.srcObject = null
+      info.analysisContext?.close().catch(() => {})
     })
     const micStream = get().micStream
     if (micStream) micStream.getTracks().forEach((t) => t.stop())
