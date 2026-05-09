@@ -108,31 +108,18 @@ export function usePeerShare() {
     audioElement.autoplay = true
     audioElement.volume = 1.0
 
-    // AudioContext is only used for speaking detection (analyser), NOT for output
-    let audioContext: AudioContext | null = null
-    let gainNode: GainNode | null = null
-    try {
-      audioContext = new AudioContext()
-      const source = audioContext.createMediaStreamSource(remoteStream)
-      const analyser = audioContext.createAnalyser()
-      analyser.fftSize = 512
-      analyser.smoothingTimeConstant = 0.8
-      source.connect(analyser)
-      // Do NOT connect to audioContext.destination — output goes through audioElement
-    } catch (e) {
-      console.warn('[SongShare] Could not create AudioContext for speaking detection:', e)
-    }
-
     const info: VoiceStreamInfo = {
       stream: remoteStream,
       audioElement,
-      audioContext,
-      gainNode,
+      audioContext: null,
+      gainNode: null,
       volume: 1.0,
       isSpeaking: false,
     }
 
     store.addVoiceStream(peerId, info)
+    // startSpeakingDetection creates its own AudioContext+AnalyserNode for
+    // speaking analysis (not connected to destination, so no audio routing issue)
     startSpeakingDetection(peerId, remoteStream)
   }, [startSpeakingDetection])
 
@@ -1103,13 +1090,38 @@ export function usePeerShare() {
     } else {
       // Activate mic
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        })
+        // Enumerate audio input devices and pick a real microphone,
+        // avoiding loopback / system-audio devices (Stereo Mix, etc.)
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const audioInputs = devices.filter((d) => d.kind === 'audioinput')
+
+        // Keywords that indicate a loopback/system-audio device
+        const loopbackKeywords = [
+          'stereo mix', 'wave out', 'waveout', 'what u hear',
+          'loopback', 'virtual', 'soundflower', 'blackhole',
+          'system audio', 'mixagem', 'mistura', 'saida',
+        ]
+        const isLoopback = (label: string) =>
+          loopbackKeywords.some((kw) => label.toLowerCase().includes(kw))
+
+        // Try to find a real microphone (first non-loopback device)
+        const realMic = audioInputs.find((d) => d.label && !isLoopback(d.label))
+
+        const constraints: MediaTrackConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+        if (realMic?.deviceId) {
+          constraints.deviceId = { exact: realMic.deviceId }
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
+
+        // Diagnostic log — helps identify which device was actually used
+        const track = stream.getAudioTracks()[0]
+        console.log('[SongShare] Mic activated:', track.label)
+        console.log('[SongShare] Mic device settings:', JSON.stringify(track.getSettings()))
 
         setMicStream(stream)
         setMicActive(true)
