@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useCallback } from 'react'
-import { motion } from 'framer-motion'
+import { useState, useCallback, useEffect, useMemo } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Headphones, LogOut, Copy, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSongShareStore } from '@/store/songshare'
@@ -11,6 +11,8 @@ import { ChatPanel } from './ChatPanel'
 import { LyricsPanel } from './LyricsPanel'
 import { VoiceChatPanel } from './VoiceChatPanel'
 import { UserList } from './UserList'
+import { SyncedLyricsView } from './SyncedLyricsView'
+import { parseLrc, isLrcFormat } from '@/lib/lrc-parser'
 
 interface RoomScreenProps {
   audioRef: React.RefObject<HTMLAudioElement | null>
@@ -19,7 +21,6 @@ interface RoomScreenProps {
   onSeek: (time: number) => void
   onNext: () => void
   onPrevious: () => void
-  onRequestPlayback: (action: 'play' | 'pause' | 'next' | 'previous' | 'seek', seekTime?: number) => void
   onAddTrack: (file: File, lyrics?: string) => void
   onRemoveTrack: (trackId: string) => void
   onSendMessage: (content: string) => void
@@ -39,7 +40,6 @@ export function RoomScreen({
   onSeek,
   onNext,
   onPrevious,
-  onRequestPlayback,
   onAddTrack,
   onRemoveTrack,
   onSendMessage,
@@ -54,6 +54,24 @@ export function RoomScreen({
   const { room, roomCode } = useSongShareStore()
   const isPlaying = room?.isPlaying ?? false
   const [copied, setCopied] = useState(false)
+
+  // Track currentTime via rAF from audioRef
+  const [currentTime, setCurrentTime] = useState(0)
+  useEffect(() => {
+    let active = true
+    let last = 0
+    const tick = () => {
+      if (!active) return
+      const now = performance.now()
+      if (now - last >= 100) {
+        last = now
+        setCurrentTime(audioRef.current?.currentTime ?? 0)
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+    return () => { active = false }
+  }, [audioRef])
 
   const copyCode = useCallback(async () => {
     try {
@@ -77,6 +95,14 @@ export function RoomScreen({
   const currentTrack = room && room.currentTrackIndex >= 0
     ? room.playlist[room.currentTrackIndex]
     : null
+
+  // Parse LRC lyrics when available
+  const currentTrackLyrics = currentTrack?.lyrics ?? ''
+  const parsedLrcLines = useMemo(() => {
+    if (!currentTrackLyrics) return []
+    if (!isLrcFormat(currentTrackLyrics)) return []
+    return parseLrc(currentTrackLyrics)
+  }, [currentTrackLyrics])
 
   return (
     <div className="h-dvh flex flex-col bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950">
@@ -108,12 +134,12 @@ export function RoomScreen({
           )}
         </button>
 
-        {/* Leave button - mobile only (desktop has one in the sidebar via UserList) */}
+        {/* Leave button - always visible */}
         <Button
           variant="ghost"
           size="icon"
           onClick={onLeave}
-          className="lg:hidden text-zinc-500 hover:text-red-400 hover:bg-red-500/10 h-9 w-9 rounded-full mr-1"
+          className="text-zinc-500 hover:text-red-400 hover:bg-red-500/10 h-9 w-9 rounded-full mr-1"
           title="Sair da sala"
         >
           <LogOut className="w-4 h-4" />
@@ -155,28 +181,56 @@ export function RoomScreen({
             <div className="hidden lg:flex flex-1 items-center justify-center p-8">
               <div className="w-full max-w-md">
                 <div className="flex flex-col items-center mb-8">
-                  <motion.div
-                    animate={{
-                      boxShadow: isPlaying
-                        ? '0 0 60px rgba(244, 63, 94, 0.15), 0 0 120px rgba(244, 63, 94, 0.05)'
-                        : '0 0 0px rgba(244, 63, 94, 0)',
-                    }}
-                    transition={{ duration: 1 }}
-                    className="w-56 h-56 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/50 flex items-center justify-center mb-6"
-                  >
-                    <motion.div
-                      animate={{
-                        rotate: isPlaying ? 360 : 0,
-                      }}
-                      transition={{
-                        duration: 8,
-                        repeat: Infinity,
-                        ease: 'linear',
-                      }}
-                    >
-                      <Headphones className="w-20 h-20 text-zinc-700" />
-                    </motion.div>
-                  </motion.div>
+                  <AnimatePresence mode="wait">
+                    {parsedLrcLines.length > 0 ? (
+                      <motion.div
+                        key="lyrics-desktop"
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        transition={{ duration: 0.3 }}
+                        className="w-full h-72 rounded-2xl bg-gradient-to-br from-zinc-900 to-zinc-950 border border-zinc-700/30 overflow-hidden relative"
+                      >
+                        <SyncedLyricsView
+                          lines={parsedLrcLines}
+                          currentTime={currentTime}
+                          isPlaying={isPlaying}
+                          className="h-full"
+                        />
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="art-desktop"
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        transition={{ duration: 0.3 }}
+                      >
+                        <motion.div
+                          animate={{
+                            boxShadow: isPlaying
+                              ? '0 0 60px rgba(244, 63, 94, 0.15), 0 0 120px rgba(244, 63, 94, 0.05)'
+                              : '0 0 0px rgba(244, 63, 94, 0)',
+                          }}
+                          transition={{ duration: 1 }}
+                          className="w-56 h-56 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/50 flex items-center justify-center mb-6"
+                        >
+                          <motion.div
+                            animate={{
+                              rotate: isPlaying ? 360 : 0,
+                            }}
+                            transition={{
+                              duration: 8,
+                              repeat: Infinity,
+                              ease: 'linear',
+                            }}
+                          >
+                            <Headphones className="w-20 h-20 text-zinc-700" />
+                          </motion.div>
+                        </motion.div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 <MusicPlayer
@@ -186,7 +240,6 @@ export function RoomScreen({
                   onSeek={onSeek}
                   onNext={onNext}
                   onPrevious={onPrevious}
-                  onRequestPlayback={onRequestPlayback}
                 />
               </div>
             </div>
@@ -200,30 +253,58 @@ export function RoomScreen({
                 transition={{ duration: 0.3 }}
                 className="flex-shrink-0 px-5 pt-4 pb-3 bg-gradient-to-b from-zinc-950 to-zinc-900/50"
               >
-                {/* Album art / Visual indicator */}
+                {/* Album art / Synced lyrics - Mobile */}
                 <div className="flex justify-center mb-4">
-                  <motion.div
-                    animate={{
-                      boxShadow: isPlaying
-                        ? '0 0 40px rgba(244, 63, 94, 0.12), 0 0 80px rgba(244, 63, 94, 0.04)'
-                        : '0 0 0px rgba(244, 63, 94, 0)',
-                    }}
-                    transition={{ duration: 1 }}
-                    className="w-40 h-40 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/40 flex items-center justify-center"
-                  >
-                    <motion.div
-                      animate={{
-                        rotate: isPlaying ? 360 : 0,
-                      }}
-                      transition={{
-                        duration: 8,
-                        repeat: Infinity,
-                        ease: 'linear',
-                      }}
-                    >
-                      <Headphones className="w-16 h-16 text-zinc-700" />
-                    </motion.div>
-                  </motion.div>
+                  <AnimatePresence mode="wait">
+                    {parsedLrcLines.length > 0 ? (
+                      <motion.div
+                        key="lyrics-mobile"
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.25 }}
+                        className="w-full max-w-sm h-40 rounded-2xl bg-gradient-to-br from-zinc-900 to-zinc-950 border border-zinc-700/30 overflow-hidden"
+                      >
+                        <SyncedLyricsView
+                          lines={parsedLrcLines}
+                          currentTime={currentTime}
+                          isPlaying={isPlaying}
+                          className="h-full"
+                        />
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="art-mobile"
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.25 }}
+                      >
+                        <motion.div
+                          animate={{
+                            boxShadow: isPlaying
+                              ? '0 0 40px rgba(244, 63, 94, 0.12), 0 0 80px rgba(244, 63, 94, 0.04)'
+                              : '0 0 0px rgba(244, 63, 94, 0)',
+                          }}
+                          transition={{ duration: 1 }}
+                          className="w-40 h-40 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/40 flex items-center justify-center"
+                        >
+                          <motion.div
+                            animate={{
+                              rotate: isPlaying ? 360 : 0,
+                            }}
+                            transition={{
+                              duration: 8,
+                              repeat: Infinity,
+                              ease: 'linear',
+                            }}
+                          >
+                            <Headphones className="w-16 h-16 text-zinc-700" />
+                          </motion.div>
+                        </motion.div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 {/* Mobile player controls */}
@@ -234,7 +315,6 @@ export function RoomScreen({
                   onSeek={onSeek}
                   onNext={onNext}
                   onPrevious={onPrevious}
-                  onRequestPlayback={onRequestPlayback}
                 />
               </motion.div>
 

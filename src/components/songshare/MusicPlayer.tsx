@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { formatTime } from './utils'
-import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
+import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { useSongShareStore } from '@/store/songshare'
+import { isLrcFormat } from '@/lib/lrc-parser'
 
 interface MusicPlayerProps {
   audioRef: RefObject<HTMLAudioElement | null>
@@ -15,7 +16,6 @@ interface MusicPlayerProps {
   onSeek: (time: number) => void
   onNext: () => void
   onPrevious: () => void
-  onRequestPlayback?: (action: 'play' | 'pause' | 'next' | 'previous' | 'seek', seekTime?: number) => void
 }
 
 export function MusicPlayer({
@@ -25,7 +25,6 @@ export function MusicPlayer({
   onSeek,
   onNext,
   onPrevious,
-  onRequestPlayback,
 }: MusicPlayerProps) {
   const { room, socket } = useSongShareStore()
   const [isMuted, setIsMuted] = useState(false)
@@ -38,6 +37,8 @@ export function MusicPlayer({
   const currentTrack = room && room.currentTrackIndex >= 0
     ? room.playlist[room.currentTrackIndex]
     : null
+
+  const hasSyncedLyrics = currentTrack?.lyrics ? isLrcFormat(currentTrack.lyrics) : false
 
   // rAF loop reads audio element directly for smooth progress (~10fps)
   // This avoids updating Zustand store on every timeupdate, preventing
@@ -61,34 +62,9 @@ export function MusicPlayer({
     }
   }, [audioRef])
 
-  // Use requestPlayback for guests (sends request to host), direct actions for host
-  const handlePlay = useCallback(() => {
-    if (isHost) onPlay()
-    else onRequestPlayback?.('play')
-  }, [isHost, onPlay, onRequestPlayback])
-
-  const handlePause = useCallback(() => {
-    if (isHost) onPause()
-    else onRequestPlayback?.('pause')
-  }, [isHost, onPause, onRequestPlayback])
-
-  const handleNext = useCallback(() => {
-    if (isHost) onNext()
-    else onRequestPlayback?.('next')
-  }, [isHost, onNext, onRequestPlayback])
-
-  const handlePrevious = useCallback(() => {
-    if (isHost) onPrevious()
-    else onRequestPlayback?.('previous')
-  }, [isHost, onPrevious, onRequestPlayback])
-
-  const handleSeekRequest = useCallback((value: number[]) => {
-    if (isHost) {
-      onSeek(value[0])
-    } else {
-      onRequestPlayback?.('seek', value[0])
-    }
-  }, [isHost, onSeek, onRequestPlayback])
+  const handleSeek = useCallback((value: number[]) => {
+    onSeek(value[0])
+  }, [onSeek])
 
   const toggleMute = useCallback(() => {
     if (audioRef.current) {
@@ -115,6 +91,9 @@ export function MusicPlayer({
         <div className="min-w-0 flex-1">
           <p className="text-base sm:text-sm font-semibold text-white truncate">
             {currentTrack?.name || 'Nenhuma musica selecionada'}
+            {hasSyncedLyrics && (
+              <FileText className="w-3.5 h-3.5 text-rose-400 ml-1.5 inline-block" title="Letra sincronizada" />
+            )}
           </p>
           <p className="text-sm sm:text-xs text-zinc-500 truncate">
             {currentTrack?.artist || 'Adicione musicas para comecar'}
@@ -129,8 +108,8 @@ export function MusicPlayer({
             value={[smoothTime]}
             max={currentTrack?.duration || 100}
             step={0.1}
-            onValueChange={handleSeekRequest}
-            disabled={!currentTrack}
+            onValueChange={isHost ? handleSeek : undefined}
+            disabled={!isHost || !currentTrack}
             className="w-full [&_[data-slot=slider-track]]:h-2 sm:h-1.5 [&_[data-slot=slider-thumb]]:h-6 [&_[data-slot=slider-thumb]]:w-6 sm:[&_[data-slot=slider-thumb]]:h-4 sm:[&_[data-slot=slider-thumb]]:w-4 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 sm:[&_[data-slot=slider-thumb]]:ring-0 [&_[data-slot=slider-range]]:bg-rose-500"
           />
         </div>
@@ -145,8 +124,8 @@ export function MusicPlayer({
         <Button
           variant="ghost"
           size="icon"
-          onClick={handlePrevious}
-          disabled={!currentTrack}
+          onClick={onPrevious}
+          disabled={!isHost || !currentTrack}
           className="text-zinc-400 hover:text-white h-14 w-14 sm:h-10 sm:w-10 rounded-full active:scale-95"
         >
           <SkipBack className="w-6 h-6 sm:w-4 sm:h-4" />
@@ -154,8 +133,8 @@ export function MusicPlayer({
 
         <Button
           size="icon"
-          onClick={room?.isPlaying ? handlePause : handlePlay}
-          disabled={!currentTrack}
+          onClick={room?.isPlaying ? onPause : onPlay}
+          disabled={!isHost || !currentTrack}
           className="h-[4.5rem] w-[4.5rem] sm:h-14 sm:w-14 rounded-full bg-white text-zinc-900 hover:bg-zinc-200 shadow-lg shadow-white/10 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
         >
           {room?.isPlaying ? (
@@ -168,8 +147,8 @@ export function MusicPlayer({
         <Button
           variant="ghost"
           size="icon"
-          onClick={handleNext}
-          disabled={!currentTrack}
+          onClick={onNext}
+          disabled={!isHost || !currentTrack}
           className="text-zinc-400 hover:text-white h-14 w-14 sm:h-10 sm:w-10 rounded-full active:scale-95"
         >
           <SkipForward className="w-6 h-6 sm:w-4 sm:h-4" />
@@ -203,7 +182,7 @@ export function MusicPlayer({
 
       {!isHost && currentTrack && (
         <p className="text-xs text-zinc-600 text-center mt-3 sm:mt-2">
-          Os controles enviam solicitacoes ao host
+          Apenas o host pode controlar a reproducao
         </p>
       )}
     </div>

@@ -9,6 +9,7 @@ import {
   Plus,
   ListMusic,
   FileText,
+  FileUp,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -44,6 +45,7 @@ export function Playlist({
 }: PlaylistProps) {
   const { room, socket, audioCache } = useSongShareStore()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const lrcInputRef = useRef<HTMLInputElement>(null)
 
   // Dialog state for lyrics input
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
@@ -54,34 +56,54 @@ export function Playlist({
   const isHost = room?.hostId === socket?.id
 
   // Process files: if single file, show lyrics dialog; if multiple, add directly
+  // Also auto-pairs .lrc files with same-name audio files
   const processFiles = useCallback(
     (files: FileList | null) => {
       if (!files) return
       const validFiles: PendingFile[] = []
+      const lrcMap = new Map<string, string>() // baseName -> lrc content
 
       Array.from(files).forEach((file) => {
+        const name = file.name
+        // Check for .lrc files
+        if (name.match(/\.lrc$/i)) {
+          const baseName = name.replace(/\.lrc$/i, '')
+          const reader = new FileReader()
+          reader.onload = () => {
+            lrcMap.set(baseName, reader.result as string)
+          }
+          reader.readAsText(file)
+          return
+        }
         if (
           file.type.startsWith('audio/') ||
-          file.name.match(/\.(mp3|wav|ogg|flac|aac|m4a|wma)$/i)
+          name.match(/\.(mp3|wav|ogg|flac|aac|m4a|wma)$/i)
         ) {
           if (file.size <= 50 * 1024 * 1024) {
-            validFiles.push({ file, name: file.name.replace(/\.[^.]+$/, '') })
+            validFiles.push({ file, name: name.replace(/\.[^.]+$/, '') })
           }
         }
       })
 
       if (validFiles.length === 0) return
 
-      if (validFiles.length === 1) {
-        // Single file: open lyrics dialog
-        setPendingFiles(validFiles)
-        setCurrentFileIndex(0)
-        setLyricsDraft('')
-        setLyricsDialogOpen(true)
-      } else {
-        // Multiple files: add directly without lyrics
-        validFiles.forEach(({ file }) => onAddTrack(file))
-      }
+      // Wait for LRC files to be read before processing
+      setTimeout(() => {
+        if (validFiles.length === 1) {
+          // Single file: open lyrics dialog, pre-fill if .lrc found
+          const lrcContent = lrcMap.get(validFiles[0].name) || ''
+          setPendingFiles(validFiles)
+          setCurrentFileIndex(0)
+          setLyricsDraft(lrcContent)
+          setLyricsDialogOpen(true)
+        } else {
+          // Multiple files: add directly, auto-pair .lrc if available
+          validFiles.forEach(({ file, name }) => {
+            const lrcContent = lrcMap.get(name) || ''
+            onAddTrack(file, lrcContent)
+          })
+        }
+      }, 50)
     },
     [onAddTrack]
   )
@@ -122,8 +144,9 @@ export function Playlist({
     const { file } = pendingFiles[currentFileIndex]
     onAddTrack(file, lyricsDraft.trim())
 
-    // Reset input for next file
+    // Reset inputs for next file
     if (fileInputRef.current) fileInputRef.current.value = ''
+    if (lrcInputRef.current) lrcInputRef.current.value = ''
 
     setLyricsDialogOpen(false)
     setPendingFiles([])
@@ -135,10 +158,23 @@ export function Playlist({
     onAddTrack(file, '')
 
     if (fileInputRef.current) fileInputRef.current.value = ''
+    if (lrcInputRef.current) lrcInputRef.current.value = ''
 
     setLyricsDialogOpen(false)
     setPendingFiles([])
     setLyricsDraft('')
+  }
+
+  const handleLrcUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setLyricsDraft(reader.result as string)
+    }
+    reader.readAsText(file)
+    // Reset so same file can be re-selected
+    e.target.value = ''
   }
 
   const currentTrack = room && room.currentTrackIndex >= 0
@@ -181,10 +217,18 @@ export function Playlist({
         <input
           ref={fileInputRef}
           type="file"
-          accept="audio/*,.mp3,.wav,.ogg,.flac,.aac,.m4a,.wma"
+          accept="audio/*,.mp3,.wav,.ogg,.flac,.aac,.m4a,.wma,.lrc"
           multiple
           className="hidden"
           onChange={(e) => handleFileSelect(e.target.files)}
+        />
+        {/* Hidden LRC file input */}
+        <input
+          ref={lrcInputRef}
+          type="file"
+          accept=".lrc"
+          className="hidden"
+          onChange={handleLrcUpload}
         />
 
         {/* Playlist items */}
@@ -323,14 +367,14 @@ export function Playlist({
 
       {/* Lyrics Dialog */}
       <Dialog open={lyricsDialogOpen} onOpenChange={setLyricsDialogOpen}>
-        <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-md flex flex-col max-h-[90dvh] overflow-hidden">
-          <DialogHeader className="flex-shrink-0">
+        <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-md">
+          <DialogHeader>
             <DialogTitle className="text-zinc-200 flex items-center gap-2">
               <FileText className="w-5 h-5 text-rose-500" />
               Adicionar letra
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
+          <div className="space-y-3">
             <p className="text-sm text-zinc-400">
               Musica: <span className="text-zinc-200 font-medium">{pendingFiles[currentFileIndex]?.name}</span>
             </p>
@@ -344,8 +388,20 @@ export function Playlist({
             <p className="text-xs text-zinc-600">
               Voce podera editar a letra depois, pela aba de letras.
             </p>
+            <div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => lrcInputRef.current?.click()}
+                className="border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg text-xs"
+              >
+                <FileUp className="w-3.5 h-3.5 mr-1.5" />
+                Carregar arquivo .lrc
+              </Button>
+            </div>
           </div>
-          <DialogFooter className="flex-shrink-0 flex gap-2 sm:gap-0">
+          <DialogFooter className="flex gap-2 sm:gap-0">
             <Button
               variant="ghost"
               onClick={handleDialogSkip}
