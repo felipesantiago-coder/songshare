@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Headphones, LogOut, Copy, Check } from 'lucide-react'
+import { Headphones, LogOut, Copy, Check, ListMusic } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSongShareStore } from '@/store/songshare'
 import { MusicPlayer } from './MusicPlayer'
@@ -54,6 +54,7 @@ export function RoomScreen({
   const { room, roomCode } = useSongShareStore()
   const isPlaying = room?.isPlaying ?? false
   const [copied, setCopied] = useState(false)
+  const [showMobilePlaylist, setShowMobilePlaylist] = useState(false)
 
   // Track currentTime via rAF from audioRef
   const [currentTime, setCurrentTime] = useState(0)
@@ -244,17 +245,17 @@ export function RoomScreen({
               </div>
             </div>
 
-            {/* Mobile layout: Player at top, Playlist below */}
+            {/* Mobile layout: Player takes full space, Playlist toggleable */}
             <div className="lg:hidden flex flex-col flex-1 overflow-hidden">
               {/* Mobile player section - the hero area */}
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3 }}
-                className="flex-shrink-0 px-5 pt-4 pb-3 bg-gradient-to-b from-zinc-950 to-zinc-900/50"
+                className="flex-1 min-h-0 flex flex-col px-5 pt-4 pb-3 bg-gradient-to-b from-zinc-950 to-zinc-900/50 overflow-hidden"
               >
                 {/* Album art / Synced lyrics - Mobile */}
-                <div className="flex justify-center mb-4">
+                <div className="flex justify-center mb-4 flex-shrink-0">
                   <AnimatePresence mode="wait">
                     {parsedLrcLines.length > 0 ? (
                       <motion.div
@@ -318,18 +319,44 @@ export function RoomScreen({
                 />
               </motion.div>
 
-              {/* Visual divider */}
-              <div className="flex-shrink-0 h-px bg-gradient-to-r from-transparent via-zinc-700/50 to-transparent" />
+              {/* Playlist toggle button — fixed above divider */}
+              <div className="flex-shrink-0">
+                <button
+                  onClick={() => setShowMobilePlaylist(!showMobilePlaylist)}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 text-xs text-zinc-500 hover:text-zinc-300 active:text-zinc-200 transition-colors"
+                >
+                  <ListMusic className="w-3.5 h-3.5" />
+                  <span>{showMobilePlaylist ? 'Ocultar playlist' : 'Ver playlist'}</span>
+                  {room?.playlist && room.playlist.length > 0 && (
+                    <span className="bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded-full text-[10px]">
+                      {room.playlist.length}
+                    </span>
+                  )}
+                </button>
 
-              {/* Mobile playlist - scrollable below player */}
-              <div className="flex-1 overflow-hidden">
-                <Playlist
-                  onAddTrack={onAddTrack}
-                  onRemoveTrack={onRemoveTrack}
-                  isDragOver={isDragOver}
-                  setIsDragOver={setIsDragOver}
-                />
+                {/* Visual divider */}
+                <div className="h-px bg-gradient-to-r from-transparent via-zinc-700/50 to-transparent" />
               </div>
+
+              {/* Mobile playlist — collapsible */}
+              <AnimatePresence>
+                {showMobilePlaylist && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: '40dvh', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.3, ease: 'easeInOut' }}
+                    className="overflow-hidden flex-shrink-0"
+                  >
+                    <Playlist
+                      onAddTrack={onAddTrack}
+                      onRemoveTrack={onRemoveTrack}
+                      isDragOver={isDragOver}
+                      setIsDragOver={setIsDragOver}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Safe area bottom padding for notched phones */}
               <div className="flex-shrink-0 h-[env(safe-area-inset-bottom)]" />

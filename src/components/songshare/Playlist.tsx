@@ -367,28 +367,28 @@ export function Playlist({
 
       {/* Lyrics Dialog */}
       <Dialog open={lyricsDialogOpen} onOpenChange={setLyricsDialogOpen}>
-        <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-md">
-          <DialogHeader>
+        <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-md max-h-[85dvh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle className="text-zinc-200 flex items-center gap-2">
               <FileText className="w-5 h-5 text-rose-500" />
               Adicionar letra
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
-            <p className="text-sm text-zinc-400">
+          <div className="space-y-3 flex-1 min-h-0 overflow-y-auto">
+            <p className="text-sm text-zinc-400 flex-shrink-0">
               Musica: <span className="text-zinc-200 font-medium">{pendingFiles[currentFileIndex]?.name}</span>
             </p>
             <Textarea
               value={lyricsDraft}
               onChange={(e) => setLyricsDraft(e.target.value)}
               placeholder={`Cole ou digite a letra de "${pendingFiles[currentFileIndex]?.name}" aqui...`}
-              className="bg-zinc-800/50 border-zinc-700 text-white placeholder:text-zinc-600 text-sm resize-none rounded-lg focus:border-rose-500/50 min-h-[200px]"
+              className="bg-zinc-800/50 border-zinc-700 text-white placeholder:text-zinc-600 text-sm resize-none rounded-lg focus:border-rose-500/50 min-h-[150px] max-h-[40dvh]"
               autoFocus
             />
-            <p className="text-xs text-zinc-600">
+            <p className="text-xs text-zinc-600 flex-shrink-0">
               Voce podera editar a letra depois, pela aba de letras.
             </p>
-            <div>
+            <div className="flex-shrink-0">
               <Button
                 type="button"
                 variant="outline"
@@ -401,7 +401,7 @@ export function Playlist({
               </Button>
             </div>
           </div>
-          <DialogFooter className="flex gap-2 sm:gap-0">
+          <DialogFooter className="flex gap-2 sm:gap-0 flex-shrink-0 pt-2">
             <Button
               variant="ghost"
               onClick={handleDialogSkip}

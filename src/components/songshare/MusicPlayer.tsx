@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { formatTime } from './utils'
-import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, FileText } from 'lucide-react'
+import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, VolumeX, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { useSongShareStore } from '@/store/songshare'
@@ -81,6 +81,27 @@ export function MusicPlayer({
     }
   }, [audioRef])
 
+  // Volume popup state
+  const [showVolume, setShowVolume] = useState(false)
+  const volumeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const volumeContainerRef = useRef<HTMLDivElement>(null)
+
+  const openVolume = useCallback(() => {
+    setShowVolume(true)
+    if (volumeTimeoutRef.current) clearTimeout(volumeTimeoutRef.current)
+  }, [])
+
+  const closeVolumeDelayed = useCallback(() => {
+    volumeTimeoutRef.current = setTimeout(() => setShowVolume(false), 1500)
+  }, [])
+
+  const handleVolumeInteraction = useCallback(() => {
+    if (volumeTimeoutRef.current) clearTimeout(volumeTimeoutRef.current)
+  }, [])
+
+  // Volume icon based on level
+  const VolumeIcon = isMuted ? VolumeX : volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
+
   return (
     <div className="w-full">
       {/* Now playing info */}
@@ -155,28 +176,52 @@ export function MusicPlayer({
         </Button>
       </div>
 
-      {/* Volume row */}
-      <div className="flex items-center gap-3 mt-4 sm:mt-3 sm:ml-4">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleMute}
-          className="text-zinc-400 hover:text-white h-12 w-12 sm:h-9 sm:w-9 rounded-full"
+      {/* Volume button + popup */}
+      <div className="flex items-center justify-center mt-4 sm:mt-3">
+        <div
+          ref={volumeContainerRef}
+          className="relative"
+          onMouseEnter={openVolume}
+          onMouseLeave={closeVolumeDelayed}
+          onTouchStart={openVolume}
         >
-          {isMuted ? (
-            <VolumeX className="w-5 h-5 sm:w-4 sm:h-4" />
-          ) : (
-            <Volume2 className="w-5 h-5 sm:w-4 sm:h-4" />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggleMute}
+            className="text-zinc-400 hover:text-white h-12 w-12 sm:h-9 sm:w-9 rounded-full"
+          >
+            <VolumeIcon className="w-5 h-5 sm:w-4 sm:h-4" />
+          </Button>
+
+          {/* Vertical volume slider popup */}
+          {showVolume && (
+            <div
+              className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 bg-zinc-800 border border-zinc-700/50 rounded-xl p-3 shadow-xl shadow-black/40 z-50"
+              onMouseEnter={handleVolumeInteraction}
+              onMouseLeave={closeVolumeDelayed}
+              onTouchStart={handleVolumeInteraction}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex flex-col items-center gap-1" style={{ height: '120px' }}>
+                <span className="text-[10px] text-zinc-500 font-medium tabular-nums">
+                  {Math.round((isMuted ? 0 : volume) * 100)}%
+                </span>
+                <Slider
+                  value={[isMuted ? 0 : volume]}
+                  max={1}
+                  min={0}
+                  step={0.01}
+                  onValueChange={(v) => {
+                    handleVolumeChange(v)
+                    openVolume()
+                  }}
+                  orientation="vertical"
+                  className="h-24 [&_[data-slot=slider-track]]:w-2 [&_[data-slot=slider-thumb]]:h-6 [&_[data-slot=slider-thumb]]:w-6 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 [&_[data-slot=slider-range]]:bg-rose-500"
+                />
+              </div>
+            </div>
           )}
-        </Button>
-        <div className="flex-1 sm:flex-none sm:w-24">
-          <Slider
-            value={[isMuted ? 0 : volume]}
-            max={1}
-            step={0.01}
-            onValueChange={handleVolumeChange}
-            className="[&_[data-slot=slider-track]]:h-2 [&_[data-slot=slider-thumb]]:h-6 [&_[data-slot=slider-thumb]]:w-6 sm:[&_[data-slot=slider-thumb]]:h-4 sm:[&_[data-slot=slider-thumb]]:w-4 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 sm:[&_[data-slot=slider-thumb]]:ring-0 [&_[data-slot=slider-range]]:bg-rose-500"
-          />
         </div>
       </div>
 
