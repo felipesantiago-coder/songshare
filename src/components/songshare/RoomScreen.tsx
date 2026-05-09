@@ -247,15 +247,15 @@ export function RoomScreen({
 
             {/* Mobile layout: Player takes full space, Playlist toggleable */}
             <div className="lg:hidden flex flex-col flex-1 overflow-hidden">
-              {/* Mobile player section - the hero area */}
+              {/* Mobile player section — art/lyrics fills all available space */}
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3 }}
-                className="flex-1 min-h-0 flex flex-col px-5 pt-4 pb-3 bg-gradient-to-b from-zinc-950 to-zinc-900/50 overflow-hidden"
+                className="flex-1 min-h-0 flex flex-col px-4 pt-3 bg-gradient-to-b from-zinc-950 to-zinc-900/50 overflow-hidden"
               >
-                {/* Album art / Synced lyrics - Mobile */}
-                <div className="flex justify-center mb-4 flex-shrink-0">
+                {/* Album art / Synced lyrics — flexible, fills available space */}
+                <div className="flex-1 min-h-0 flex justify-center items-center">
                   <AnimatePresence mode="wait">
                     {parsedLrcLines.length > 0 ? (
                       <motion.div
@@ -264,7 +264,7 @@ export function RoomScreen({
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -8 }}
                         transition={{ duration: 0.25 }}
-                        className="w-full max-w-sm h-40 rounded-2xl bg-gradient-to-br from-zinc-900 to-zinc-950 border border-zinc-700/30 overflow-hidden"
+                        className="w-full h-full rounded-2xl bg-gradient-to-br from-zinc-900 to-zinc-950 border border-zinc-700/30 overflow-hidden"
                       >
                         <SyncedLyricsView
                           lines={parsedLrcLines}
@@ -280,6 +280,7 @@ export function RoomScreen({
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -8 }}
                         transition={{ duration: 0.25 }}
+                        className="flex items-center justify-center"
                       >
                         <motion.div
                           animate={{
@@ -288,7 +289,7 @@ export function RoomScreen({
                               : '0 0 0px rgba(244, 63, 94, 0)',
                           }}
                           transition={{ duration: 1 }}
-                          className="w-40 h-40 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/40 flex items-center justify-center"
+                          className="w-44 h-44 sm:w-48 sm:h-48 rounded-2xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/40 flex items-center justify-center"
                         >
                           <motion.div
                             animate={{
@@ -300,7 +301,7 @@ export function RoomScreen({
                               ease: 'linear',
                             }}
                           >
-                            <Headphones className="w-16 h-16 text-zinc-700" />
+                            <Headphones className="w-18 h-18 text-zinc-700" />
                           </motion.div>
                         </motion.div>
                       </motion.div>
@@ -308,15 +309,17 @@ export function RoomScreen({
                   </AnimatePresence>
                 </div>
 
-                {/* Mobile player controls */}
-                <MusicPlayer
-                  audioRef={audioRef}
-                  onPlay={onPlay}
-                  onPause={onPause}
-                  onSeek={onSeek}
-                  onNext={onNext}
-                  onPrevious={onPrevious}
-                />
+                {/* Mobile player controls — compact, at the bottom */}
+                <div className="flex-shrink-0 pb-2">
+                  <MusicPlayer
+                    audioRef={audioRef}
+                    onPlay={onPlay}
+                    onPause={onPause}
+                    onSeek={onSeek}
+                    onNext={onNext}
+                    onPrevious={onPrevious}
+                  />
+                </div>
               </motion.div>
 
               {/* Playlist toggle button — fixed above divider */}

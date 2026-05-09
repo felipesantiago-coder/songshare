@@ -105,82 +105,25 @@ export function MusicPlayer({
   return (
     <div className="w-full">
       {/* Now playing info */}
-      <div className="flex items-center gap-3 sm:gap-3 mb-3 sm:mb-4 min-w-0">
-        <div className="w-14 h-14 sm:w-11 sm:h-11 rounded-2xl sm:rounded-lg bg-zinc-800 flex items-center justify-center flex-shrink-0">
-          <div className={`w-5 h-5 sm:w-3.5 sm:h-3.5 rounded-full ${currentTrack ? 'bg-rose-500 animate-pulse' : 'bg-zinc-600'}`} />
+      <div className="flex items-center gap-3 sm:gap-3 mb-2 sm:mb-4 min-w-0">
+        <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-lg bg-zinc-800 flex items-center justify-center flex-shrink-0">
+          <div className={`w-4 h-4 sm:w-3.5 sm:h-3.5 rounded-full ${currentTrack ? 'bg-rose-500 animate-pulse' : 'bg-zinc-600'}`} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-base sm:text-sm font-semibold text-white truncate">
+          <p className="text-sm sm:text-sm font-semibold text-white truncate">
             {currentTrack?.name || 'Nenhuma musica selecionada'}
             {hasSyncedLyrics && (
-              <FileText className="w-3.5 h-3.5 text-rose-400 ml-1.5 inline-block" title="Letra sincronizada" />
+              <FileText className="w-3 h-3 text-rose-400 ml-1.5 inline-block" title="Letra sincronizada" />
             )}
           </p>
-          <p className="text-sm sm:text-xs text-zinc-500 truncate">
+          <p className="text-xs sm:text-xs text-zinc-500 truncate">
             {currentTrack?.artist || 'Adicione musicas para comecar'}
           </p>
         </div>
-      </div>
-
-      {/* Progress bar - large touch target on mobile */}
-      <div className="space-y-1.5 sm:space-y-1 mb-3 sm:mb-3">
-        <div className="pt-3 pb-2 sm:py-0">
-          <Slider
-            value={[smoothTime]}
-            max={currentTrack?.duration || 100}
-            step={0.1}
-            onValueChange={isHost ? handleSeek : undefined}
-            disabled={!isHost || !currentTrack}
-            className="w-full [&_[data-slot=slider-track]]:h-2 sm:h-1.5 [&_[data-slot=slider-thumb]]:h-6 [&_[data-slot=slider-thumb]]:w-6 sm:[&_[data-slot=slider-thumb]]:h-4 sm:[&_[data-slot=slider-thumb]]:w-4 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 sm:[&_[data-slot=slider-thumb]]:ring-0 [&_[data-slot=slider-range]]:bg-rose-500"
-          />
-        </div>
-        <div className="flex justify-between text-sm sm:text-xs text-zinc-500">
-          <span>{formatTime(smoothTime)}</span>
-          <span>{currentTrack ? formatTime(currentTrack.duration) : '0:00'}</span>
-        </div>
-      </div>
-
-      {/* Transport controls - large touch targets on mobile */}
-      <div className="flex items-center justify-center gap-5 sm:gap-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onPrevious}
-          disabled={!isHost || !currentTrack}
-          className="text-zinc-400 hover:text-white h-14 w-14 sm:h-10 sm:w-10 rounded-full active:scale-95"
-        >
-          <SkipBack className="w-6 h-6 sm:w-4 sm:h-4" />
-        </Button>
-
-        <Button
-          size="icon"
-          onClick={room?.isPlaying ? onPause : onPlay}
-          disabled={!isHost || !currentTrack}
-          className="h-[4.5rem] w-[4.5rem] sm:h-14 sm:w-14 rounded-full bg-white text-zinc-900 hover:bg-zinc-200 shadow-lg shadow-white/10 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
-        >
-          {room?.isPlaying ? (
-            <Pause className="w-8 h-8 sm:w-6 sm:h-6" />
-          ) : (
-            <Play className="w-8 h-8 sm:w-6 sm:h-6 ml-1 sm:ml-0.5" />
-          )}
-        </Button>
-
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onNext}
-          disabled={!isHost || !currentTrack}
-          className="text-zinc-400 hover:text-white h-14 w-14 sm:h-10 sm:w-10 rounded-full active:scale-95"
-        >
-          <SkipForward className="w-6 h-6 sm:w-4 sm:h-4" />
-        </Button>
-      </div>
-
-      {/* Volume button + popup */}
-      <div className="flex items-center justify-center mt-4 sm:mt-3">
+        {/* Volume — integrated on the right side of now playing info */}
         <div
           ref={volumeContainerRef}
-          className="relative"
+          className="relative flex-shrink-0"
           onMouseEnter={openVolume}
           onMouseLeave={closeVolumeDelayed}
           onTouchStart={openVolume}
@@ -189,21 +132,21 @@ export function MusicPlayer({
             variant="ghost"
             size="icon"
             onClick={toggleMute}
-            className="text-zinc-400 hover:text-white h-12 w-12 sm:h-9 sm:w-9 rounded-full"
+            className="text-zinc-400 hover:text-white h-9 w-9 rounded-full"
           >
-            <VolumeIcon className="w-5 h-5 sm:w-4 sm:h-4" />
+            <VolumeIcon className="w-4 h-4" />
           </Button>
 
           {/* Vertical volume slider popup */}
           {showVolume && (
             <div
-              className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 bg-zinc-800 border border-zinc-700/50 rounded-xl p-3 shadow-xl shadow-black/40 z-50"
+              className="absolute bottom-full right-0 mb-2 bg-zinc-800 border border-zinc-700/50 rounded-xl p-2.5 shadow-xl shadow-black/40 z-50"
               onMouseEnter={handleVolumeInteraction}
               onMouseLeave={closeVolumeDelayed}
               onTouchStart={handleVolumeInteraction}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex flex-col items-center gap-1" style={{ height: '120px' }}>
+              <div className="flex flex-col items-center gap-1" style={{ height: '100px' }}>
                 <span className="text-[10px] text-zinc-500 font-medium tabular-nums">
                   {Math.round((isMuted ? 0 : volume) * 100)}%
                 </span>
@@ -217,7 +160,7 @@ export function MusicPlayer({
                     openVolume()
                   }}
                   orientation="vertical"
-                  className="h-24 [&_[data-slot=slider-track]]:w-2 [&_[data-slot=slider-thumb]]:h-6 [&_[data-slot=slider-thumb]]:w-6 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 [&_[data-slot=slider-range]]:bg-rose-500"
+                  className="h-20 [&_[data-slot=slider-track]]:w-1.5 [&_[data-slot=slider-thumb]]:h-5 [&_[data-slot=slider-thumb]]:w-5 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 [&_[data-slot=slider-range]]:bg-rose-500"
                 />
               </div>
             </div>
@@ -225,8 +168,60 @@ export function MusicPlayer({
         </div>
       </div>
 
+      {/* Progress bar */}
+      <div className="space-y-1 mb-2 sm:mb-3">
+        <Slider
+          value={[smoothTime]}
+          max={currentTrack?.duration || 100}
+          step={0.1}
+          onValueChange={isHost ? handleSeek : undefined}
+          disabled={!isHost || !currentTrack}
+          className="w-full [&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-thumb]]:h-5 [&_[data-slot=slider-thumb]]:w-5 sm:[&_[data-slot=slider-thumb]]:h-4 sm:[&_[data-slot=slider-thumb]]:w-4 [&_[data-slot=slider-thumb]]:bg-white [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:ring-rose-500/30 [&_[data-slot=slider-thumb]]:ring-offset-0 sm:[&_[data-slot=slider-thumb]]:ring-0 [&_[data-slot=slider-range]]:bg-rose-500"
+        />
+        <div className="flex justify-between text-xs sm:text-xs text-zinc-500">
+          <span>{formatTime(smoothTime)}</span>
+          <span>{currentTrack ? formatTime(currentTrack.duration) : '0:00'}</span>
+        </div>
+      </div>
+
+      {/* Transport controls */}
+      <div className="flex items-center justify-center gap-5 sm:gap-3">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onPrevious}
+          disabled={!isHost || !currentTrack}
+          className="text-zinc-400 hover:text-white h-11 w-11 sm:h-10 sm:w-10 rounded-full active:scale-95"
+        >
+          <SkipBack className="w-5 h-5 sm:w-4 sm:h-4" />
+        </Button>
+
+        <Button
+          size="icon"
+          onClick={room?.isPlaying ? onPause : onPlay}
+          disabled={!isHost || !currentTrack}
+          className="h-14 w-14 sm:h-14 sm:w-14 rounded-full bg-white text-zinc-900 hover:bg-zinc-200 shadow-lg shadow-white/10 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed active:scale-95"
+        >
+          {room?.isPlaying ? (
+            <Pause className="w-6 h-6 sm:w-6 sm:h-6" />
+          ) : (
+            <Play className="w-6 h-6 sm:w-6 sm:h-6 ml-0.5" />
+          )}
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onNext}
+          disabled={!isHost || !currentTrack}
+          className="text-zinc-400 hover:text-white h-11 w-11 sm:h-10 sm:w-10 rounded-full active:scale-95"
+        >
+          <SkipForward className="w-5 h-5 sm:w-4 sm:h-4" />
+        </Button>
+      </div>
+
       {!isHost && currentTrack && (
-        <p className="text-xs text-zinc-600 text-center mt-3 sm:mt-2">
+        <p className="text-[10px] text-zinc-600 text-center mt-1.5">
           Apenas o host pode controlar a reproducao
         </p>
       )}
