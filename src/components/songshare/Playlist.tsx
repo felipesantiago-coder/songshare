@@ -61,18 +61,21 @@ export function Playlist({
     (files: FileList | null) => {
       if (!files) return
       const validFiles: PendingFile[] = []
-      const lrcMap = new Map<string, string>() // baseName -> lrc content
+      const lrcPromises: Promise<{ baseName: string; content: string }>[] = []
 
       Array.from(files).forEach((file) => {
         const name = file.name
         // Check for .lrc files
         if (name.match(/\.lrc$/i)) {
           const baseName = name.replace(/\.lrc$/i, '')
-          const reader = new FileReader()
-          reader.onload = () => {
-            lrcMap.set(baseName, reader.result as string)
-          }
-          reader.readAsText(file)
+          lrcPromises.push(
+            new Promise((resolve) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve({ baseName, content: reader.result as string })
+              reader.onerror = () => resolve({ baseName, content: '' })
+              reader.readAsText(file)
+            })
+          )
           return
         }
         if (
@@ -87,8 +90,13 @@ export function Playlist({
 
       if (validFiles.length === 0) return
 
-      // Wait for LRC files to be read before processing
-      setTimeout(() => {
+      // Wait for ALL LRC files to be read before processing
+      Promise.all(lrcPromises).then((lrcResults) => {
+        const lrcMap = new Map<string, string>()
+        lrcResults.forEach(({ baseName, content }) => {
+          if (content) lrcMap.set(baseName, content)
+        })
+
         if (validFiles.length === 1) {
           // Single file: open lyrics dialog, pre-fill if .lrc found
           const lrcContent = lrcMap.get(validFiles[0].name) || ''
@@ -103,7 +111,7 @@ export function Playlist({
             onAddTrack(file, lrcContent)
           })
         }
-      }, 50)
+      })
     },
     [onAddTrack]
   )
