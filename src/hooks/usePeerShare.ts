@@ -25,6 +25,8 @@ export function usePeerShare() {
   // Track the intended start time for the current track (fixes sync on track change)
   const intendedStartTimeRef = useRef<number>(0)
   const lastTrackChangeIdRef = useRef<string>('')
+  // When a guest takes local control, ignore host sync events for a cooldown period
+  const guestLocalOverrideUntilRef = useRef<number>(0)
 
   // ── Zustand selectors ────────────────────────────
   const room = useSongShareStore((s) => s.room)
@@ -415,6 +417,8 @@ export function usePeerShare() {
     /* ─── Eventos de reprodução (ouvintes recebem) ─ */
 
     const unsubPlay = manager.on('play', (data: { currentTime: number }) => {
+      // If guest has taken local control recently, don't override
+      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ isPlaying: true, currentTime: data.currentTime })
       const audio = audioRef.current
       if (audio) {
@@ -424,16 +428,22 @@ export function usePeerShare() {
     })
 
     const unsubPause = manager.on('pause', (data: { currentTime: number }) => {
+      // If guest has taken local control recently, don't override
+      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ isPlaying: false, currentTime: data.currentTime })
       audioRef.current?.pause()
     })
 
     const unsubSeek = manager.on('seek', (data: { time: number }) => {
+      // If guest has taken local control recently, don't override
+      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ currentTime: data.time })
       if (audioRef.current) audioRef.current.currentTime = data.time
     })
 
     const unsubSync = manager.on('time-sync', (data: { currentTime: number }) => {
+      // If guest has taken local control recently, don't override
+      if (Date.now() < guestLocalOverrideUntilRef.current) return
       updateRoom({ currentTime: data.currentTime })
       const audio = audioRef.current
       if (audio && !audio.paused && Math.abs(audio.currentTime - data.currentTime) > 2) {
@@ -789,14 +799,7 @@ export function usePeerShare() {
     if (updated.playlist.length === 1) updated.currentTrackIndex = 0
     setRoom(updated)
 
-    // Broadcasting
-    manager.broadcast({
-      type: 'playlist-updated',
-      playlist: updated.playlist,
-      currentTrackIndex: updated.currentTrackIndex,
-    })
-
-    // Cache local
+    // Local cache
     const blobUrl = URL.createObjectURL(file)
     setAudioUrl(trackId, blobUrl)
     if (updated.playlist.length === 1 && audioRef.current) {
@@ -804,6 +807,9 @@ export function usePeerShare() {
     }
 
     // Enviar arquivo em chunks para todos os ouvintes (with backpressure)
+    // IMPORTANT: Send chunks BEFORE broadcasting playlist update so that
+    // guests already have the data when they receive the playlist notification.
+    // This prevents time-sync from corrupting the start position during chunk download.
     const buffer = await file.arrayBuffer()
     const uint8 = new Uint8Array(buffer)
     const totalChunks = Math.ceil(uint8.byteLength / CHUNK_SIZE)
@@ -823,6 +829,13 @@ export function usePeerShare() {
       // Small pause every 5 chunks to avoid overwhelming the DataChannel
       if (i % 5 === 0) await new Promise((r) => setTimeout(r, 5))
     }
+
+    // Broadcast playlist AFTER chunks are sent so guests have audio data available
+    manager.broadcast({
+      type: 'playlist-updated',
+      playlist: updated.playlist,
+      currentTrackIndex: updated.currentTrackIndex,
+    })
   }, [username, setRoom, setAudioUrl])
 
   const removeTrack = useCallback((trackId: string) => {
@@ -865,7 +878,8 @@ export function usePeerShare() {
       updateRoom({ isPlaying: true })
       manager.broadcast({ type: 'play', currentTime })
     } else {
-      // Guest: local control only
+      // Guest: local control — set override to prevent host sync from fighting
+      guestLocalOverrideUntilRef.current = Date.now() + 5000
       audio?.play().catch(() => {})
     }
   }, [updateRoom])
@@ -881,7 +895,8 @@ export function usePeerShare() {
       updateRoom({ isPlaying: false })
       manager.broadcast({ type: 'pause', currentTime })
     } else {
-      // Guest: local control only
+      // Guest: local control — set override to prevent host sync from fighting
+      guestLocalOverrideUntilRef.current = Date.now() + 5000
       audio?.pause()
     }
   }, [updateRoom])
@@ -894,7 +909,8 @@ export function usePeerShare() {
       if (audioRef.current) audioRef.current.currentTime = time
       manager.broadcast({ type: 'seek', time })
     } else {
-      // Guest: local control only
+      // Guest: local control — set override to prevent host sync from fighting
+      guestLocalOverrideUntilRef.current = Date.now() + 5000
       if (audioRef.current) audioRef.current.currentTime = time
     }
   }, [])
@@ -1102,6 +1118,64 @@ export function usePeerShare() {
     }
   }, [setIsConnected])
 
+  const leaveRoom = useCallback(() => {
+    const manager = managerRef.current
+    const state = useSongShareStore.getState()
+    const audio = audioRef.current
+
+    // Pause and clear audio
+    if (audio) {
+      audio.pause()
+      audio.src = ''
+    }
+
+    // If guest, notify host before disconnecting
+    if (manager && !manager.isHost && state.room) {
+      try {
+        const myUser = state.room.users.find((u) => u.id === manager.userId)
+        if (myUser) {
+          manager.sendToHost({
+            type: 'user-left-request',
+            userId: manager.userId,
+            peerId: manager.getMyPeerId(),
+          })
+        }
+      } catch (e) {
+        // Connection may already be closed, that's fine
+      }
+    }
+
+    // Clean up voice streams
+    clearVoiceStreams()
+    speakingIntervalsRef.current.forEach((interval) => clearInterval(interval))
+    speakingIntervalsRef.current.clear()
+
+    // Stop time sync
+    if (timeSyncRef.current) {
+      clearInterval(timeSyncRef.current)
+      timeSyncRef.current = null
+    }
+
+    // Clear guest local override
+    guestLocalOverrideUntilRef.current = 0
+
+    // Disconnect peer manager
+    if (manager) {
+      manager.disconnect()
+    }
+
+    // Reset all store state (phase goes back to 'landing')
+    reset()
+
+    // Re-connect signaling server for next room
+    setTimeout(() => {
+      const mgr = managerRef.current
+      if (mgr) {
+        mgr.connect().then(() => setIsConnected(true)).catch(() => setIsConnected(false))
+      }
+    }, 100)
+  }, [reset, clearVoiceStreams, setIsConnected])
+
   return {
     audioRef,
     createRoom,
@@ -1120,5 +1194,6 @@ export function usePeerShare() {
     toggleMute,
     setPeerVolume,
     resyncIsConnected,
+    leaveRoom,
   }
 }
