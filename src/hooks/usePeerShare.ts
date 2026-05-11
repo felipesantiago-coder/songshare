@@ -762,16 +762,25 @@ export function usePeerShare() {
       }
 
       // New track - create track object
-      if (data.source == 'youtube' || data.url.includes('youtube.com') || data.url.includes('youtu.be')) {
-        const videoId = data.url.split(/(?:/|v=|.be/)([^&?#]+)/)[1]
+      if (data.source === 'youtube' || (data.url && (data.url.includes('youtube.com') || data.url.includes('youtu.be')))) {
+        // Regex robusta para extrair ID do YouTube
+        const match = data.url.match(/(?:youtu\.be\/|youtube\.com\/(?:.*v=|.*\/))([^&?#/]+)/);
+        const videoId = match ? match[1] : null;
+
+        if (!videoId) {
+          console.error('ID do YouTube não encontrado na URL:', data.url);
+          return;
+        }
+
         newTrack = {
           id: `yt-${videoId}-${Date.now()}`,
-          title: 'Vídeo do YouTube',
-          artist: 'YouTube',
+          title: data.title || 'Vídeo do YouTube',
+          artist: data.artist || 'YouTube',
           url: data.url,
           duration: 0,
           source: 'youtube',
-        }
+          thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+        };
       } else {
         // Local file - should have been uploaded already
         newTrack = {
