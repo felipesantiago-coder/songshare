@@ -87,7 +87,8 @@ export function MusicPlayer({
   onNext,
   onPrevious,
 }: MusicPlayerProps) {
-  const { room, socket } = useSongShareStore()
+  const room = useSongShareStore((state) => state.room)
+  const socket = useSongShareStore((state) => state.socket)
   const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(1)
   const [smoothTime, setSmoothTime] = useState(0)
