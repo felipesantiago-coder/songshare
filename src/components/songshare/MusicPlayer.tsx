@@ -334,11 +334,15 @@ export function MusicPlayer({
   }, [])
 
   const selectYouTubeVideo = useCallback((videoId: string) => {
+    console.log('[MusicPlayer] Selecting YouTube video:', videoId, 'Socket connected:', !!socket);
     if (socket) {
+      console.log('[MusicPlayer] Emitting change-track event');
       socket.emit('change-track', {
         url: `https://www.youtube.com/watch?v=${videoId}`,
         source: 'youtube',
       })
+    } else {
+      console.error('[MusicPlayer] Socket is null, cannot emit change-track');
     }
     setShowSearch(false)
     setSearchResults([])
