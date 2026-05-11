@@ -375,12 +375,18 @@ export function Playlist({
 
       {/* Lyrics Dialog */}
       <Dialog open={lyricsDialogOpen} onOpenChange={setLyricsDialogOpen}>
-        <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-md max-h-[85dvh] flex flex-col">
+        <DialogContent 
+          className="bg-zinc-900 border-zinc-800 sm:max-w-md max-h-[85dvh] flex flex-col"
+          aria-describedby="lyrics-dialog-description"
+        >
           <DialogHeader className="flex-shrink-0">
             <DialogTitle className="text-zinc-200 flex items-center gap-2">
               <FileText className="w-5 h-5 text-rose-500" />
               Adicionar letra
             </DialogTitle>
+            <DialogDescription id="lyrics-dialog-description" className="sr-only">
+              Adicione ou carregue a letra da música atual
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 flex-1 min-h-0 overflow-y-auto">
             <p className="text-sm text-zinc-400 flex-shrink-0">

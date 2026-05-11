@@ -146,7 +146,7 @@ export class PeerManager {
   /** Start a periodic reconnect loop. Stops automatically on success or destroy. */
   private startReconnectLoop() {
     if (this.reconnectTimer) return
-    console.warn('[SongShare] Disconnected from signaling server, retrying...')
+    console.log('[SongShare] Disconnected from signaling server, retrying...')
 
     // Try immediately
     if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
@@ -163,7 +163,6 @@ export class PeerManager {
         this.stopReconnectLoop()
         return
       }
-      console.log('[SongShare] Retrying signaling connection...')
       try { this.peer.reconnect() } catch { /* noop */ }
     }, 5000)
   }
