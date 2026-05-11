@@ -406,23 +406,63 @@ export function usePeerShare() {
 
     /* ─── Eventos de reprodução (ouvintes recebem) ─ */
 
-    const unsubPlay = manager.on('play', (data: { currentTime: number }) => {
+    const unsubPlay = manager.on('play', (data: { currentTime: number, executeAt?: number, serverTime?: number }) => {
       updateRoom({ isPlaying: true, currentTime: data.currentTime })
       const audio = audioRef.current
       if (audio) {
-        if (Math.abs(audio.currentTime - data.currentTime) > 1.5) audio.currentTime = data.currentTime
-        audio.play().catch(() => {})
+        // Sincronização avançada: usar timestamp absoluto se disponível
+        if (data.executeAt && data.serverTime) {
+          const delay = data.executeAt - Date.now()
+          if (delay > 0) {
+            setTimeout(() => {
+              if (Math.abs(audio.currentTime - data.currentTime) > 1.5) audio.currentTime = data.currentTime
+              audio.play().catch(() => {})
+            }, delay)
+          } else {
+            if (Math.abs(audio.currentTime - data.currentTime) > 1.5) audio.currentTime = data.currentTime
+            audio.play().catch(() => {})
+          }
+        } else {
+          if (Math.abs(audio.currentTime - data.currentTime) > 1.5) audio.currentTime = data.currentTime
+          audio.play().catch(() => {})
+        }
       }
     })
 
-    const unsubPause = manager.on('pause', (data: { currentTime: number }) => {
+    const unsubPause = manager.on('pause', (data: { currentTime: number, executeAt?: number, serverTime?: number }) => {
       updateRoom({ isPlaying: false, currentTime: data.currentTime })
-      audioRef.current?.pause()
+      
+      // Sincronização avançada: usar timestamp absoluto se disponível
+      if (data.executeAt && data.serverTime) {
+        const delay = data.executeAt - Date.now()
+        if (delay > 0) {
+          setTimeout(() => {
+            audioRef.current?.pause()
+          }, delay)
+        } else {
+          audioRef.current?.pause()
+        }
+      } else {
+        audioRef.current?.pause()
+      }
     })
 
-    const unsubSeek = manager.on('seek', (data: { time: number }) => {
+    const unsubSeek = manager.on('seek', (data: { time: number, executeAt?: number, serverTime?: number }) => {
       updateRoom({ currentTime: data.time })
-      if (audioRef.current) audioRef.current.currentTime = data.time
+      
+      // Sincronização avançada: usar timestamp absoluto se disponível
+      if (data.executeAt && data.serverTime) {
+        const delay = data.executeAt - Date.now()
+        if (delay > 0) {
+          setTimeout(() => {
+            if (audioRef.current) audioRef.current.currentTime = data.time
+          }, delay)
+        } else {
+          if (audioRef.current) audioRef.current.currentTime = data.time
+        }
+      } else {
+        if (audioRef.current) audioRef.current.currentTime = data.time
+      }
     })
 
     const unsubSync = manager.on('time-sync', (data: { currentTime: number }) => {

@@ -2,6 +2,35 @@ import Peer, { DataConnection, MediaConnection } from 'peerjs'
 
 export const PEER_PREFIX = 'songshare-'
 
+/**
+ * Calcula offset de relógio e latência usando algoritmo de Cristian
+ * @returns { clockOffset: number, rtt: number } - offset em ms para sincronizar, RTT em ms
+ */
+export function calculateClockSync(sentTime: number, receivedTime: number, serverTime: number): { clockOffset: number, rtt: number } {
+  const rtt = receivedTime - sentTime
+  const clockOffset = serverTime - (sentTime + rtt / 2)
+  return { clockOffset, rtt }
+}
+
+/**
+ * Agendar execução de comando com compensação de latência
+ * @param executeAt - Timestamp absoluto quando o comando deve ser executado (em ms)
+ * @param action - Ação a ser executada
+ * @param minLeadTime - Tempo mínimo de antecedência para agendamento (padrão: 100ms)
+ */
+export function scheduleAction(executeAt: number, action: () => void, minLeadTime = 100): void {
+  const now = Date.now()
+  const delay = executeAt - now
+  
+  if (delay <= minLeadTime) {
+    // Já passou ou está muito próximo → executa imediatamente
+    action()
+  } else {
+    // Agenda para o futuro
+    setTimeout(action, delay - minLeadTime)
+  }
+}
+
 export function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
