@@ -3,11 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { formatTime } from './utils'
-import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, VolumeX, FileText } from 'lucide-react'
+import { Play, Pause, SkipBack, SkipForward, Volume2, Volume1, VolumeX, FileText, Youtube, Music, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
+import { Input } from '@/components/ui/input'
 import { useSongShareStore } from '@/store/songshare'
 import { isLrcFormat } from '@/lib/lrc-parser'
+
+interface YouTubeTrack {
+  id: string
+  title: string
+  artist: string
+  duration: number
+  thumbnail: string
+}
 
 interface MusicPlayerProps {
   audioRef: RefObject<HTMLAudioElement | null>
@@ -16,6 +25,57 @@ interface MusicPlayerProps {
   onSeek: (time: number) => void
   onNext: () => void
   onPrevious: () => void
+}
+
+// Declare YouTube IFrame API types
+declare global {
+  interface Window {
+    YT?: {
+      Player: new (elementId: string, config: YT.PlayerOptions) => YT.Player
+      LoadingState: {
+        UNSTARTED: number
+        ENDED: number
+        PLAYING: number
+        PAUSED: number
+        BUFFERING: number
+        CUED: number
+      }
+    }
+    onYouTubeIframeAPIReady?: () => void
+  }
+}
+
+namespace YT {
+  export interface PlayerOptions {
+    videoId?: string
+    width?: number | string
+    height?: number | string
+    playerVars?: {
+      autoplay?: number
+      controls?: number
+      disablekb?: number
+      fs?: number
+      modestbranding?: number
+      rel?: number
+    }
+    events?: {
+      onReady?: (event: { target: Player }) => void
+      onStateChange?: (event: { target: Player; data: number }) => void
+      onError?: (event: { target: Player; data: number }) => void
+    }
+  }
+
+  export interface Player {
+    playVideo: () => void
+    pauseVideo: () => void
+    seekTo: (seconds: number, allowSeekAhead: boolean) => void
+    getCurrentTime: () => number
+    getDuration: () => number
+    getPlayerState: () => number
+    destroy: () => void
+    loadVideoById: (videoId: string, startSeconds?: number) => void
+    cueVideoById: (videoId: string, startSeconds?: number) => void
+  }
 }
 
 export function MusicPlayer({
@@ -29,28 +89,117 @@ export function MusicPlayer({
   const { room, socket } = useSongShareStore()
   const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(1)
-  // Smooth progress: read audio.currentTime directly via rAF (no Zustand re-renders)
   const [smoothTime, setSmoothTime] = useState(0)
-  // Track actual audio playing state for the play/pause button.
-  // For the host we use room.isPlaying (source of truth).
-  // For guests we use the actual audio element state so that local
-  // play/pause/seek actions are reflected immediately without being
-  // overridden by incoming host sync events.
   const [isAudioPlaying, setIsAudioPlaying] = useState(false)
   const rafRef = useRef<number>(0)
+  
+  // YouTube states
+  const [isYouTubeMode, setIsYouTubeMode] = useState(false)
+  const [youTubePlayer, setYouTubePlayer] = useState<YT.Player | null>(null)
+  const [youtubeId, setYoutubeId] = useState<string | null>(null)
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<YouTubeTrack[]>([])
+  const [showSearch, setShowSearch] = useState(false)
+  const [isYouTubeReady, setIsYouTubeReady] = useState(false)
+  const playerContainerRef = useRef<HTMLDivElement>(null)
 
   const isHost = room?.hostId === socket?.id
   const currentTrack = room && room.currentTrackIndex >= 0
     ? room.playlist[room.currentTrackIndex]
     : null
 
-  // Whether to show Play or Pause: host uses room state, guest uses actual audio
-  const showPlaying = isHost ? (room?.isPlaying ?? false) : isAudioPlaying
+  // Detect YouTube mode from track metadata
+  useEffect(() => {
+    if (currentTrack?.url?.includes('youtube.com') || currentTrack?.url?.includes('youtu.be')) {
+      const videoId = currentTrack.url.split(/(?:\/|v=|\.be\/)([^&?#]+)/)[1]
+      if (videoId) {
+        setIsYouTubeMode(true)
+        setYoutubeId(videoId)
+      }
+    } else {
+      setIsYouTubeMode(false)
+      setYoutubeId(null)
+    }
+  }, [currentTrack])
 
-  const hasSyncedLyrics = currentTrack?.lyrics ? isLrcFormat(currentTrack.lyrics) : false
+  // Load YouTube IFrame API
+  useEffect(() => {
+    if (!isYouTubeMode || !youtubeId) return
 
-  // rAF loop reads audio element directly for smooth progress (~10fps)
-  // Also tracks actual audio playing state for guests' play/pause button
+    const loadYouTubeAPI = () => {
+      if (window.YT && window.YT.Player) {
+        initYouTubePlayer()
+      } else {
+        const tag = document.createElement('script')
+        tag.src = 'https://www.youtube.com/iframe_api'
+        const firstScriptTag = document.getElementsByTagName('script')[0]
+        firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag)
+        
+        window.onYouTubeIframeAPIReady = () => {
+          initYouTubePlayer()
+        }
+      }
+    }
+
+    const initYouTubePlayer = () => {
+      if (!playerContainerRef.current || !youtubeId) return
+      
+      const player = new window.YT!.Player(playerContainerRef.current, {
+        videoId: youtubeId,
+        width: '100%',
+        height: '100%',
+        playerVars: {
+          autoplay: 0,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          modestbranding: 1,
+          rel: 0,
+        },
+        events: {
+          onReady: (event) => {
+            setIsYouTubeReady(true)
+            setYouTubePlayer(event.target)
+          },
+          onStateChange: (event) => {
+            const state = event.data
+            const YT = window.YT!.LoadingState
+            if (state === YT.PLAYING) {
+              setIsAudioPlaying(true)
+            } else if (state === YT.PAUSED || state === YT.ENDED) {
+              setIsAudioPlaying(false)
+            }
+          },
+        },
+      })
+    }
+
+    loadYouTubeAPI()
+
+    return () => {
+      if (youTubePlayer) {
+        youTubePlayer.destroy()
+        setYouTubePlayer(null)
+      }
+    }
+  }, [isYouTubeMode, youtubeId])
+
+  // Sync YouTube player with room state
+  useEffect(() => {
+    if (!isYouTubeMode || !youTubePlayer || !isYouTubeReady) return
+
+    if (isHost) {
+      // Host controls the player
+      if (room?.isPlaying && isAudioPlaying === false) {
+        youTubePlayer.playVideo()
+      } else if (!room?.isPlaying && isAudioPlaying) {
+        youTubePlayer.pauseVideo()
+      }
+    }
+  }, [isYouTubeMode, youTubePlayer, isYouTubeReady, room?.isPlaying, isHost])
+
+  // rAF loop for smooth progress
   useEffect(() => {
     let active = true
     let lastUpdate = 0
@@ -59,10 +208,15 @@ export function MusicPlayer({
       const now = performance.now()
       if (now - lastUpdate >= 100) {
         lastUpdate = now
-        const audio = audioRef.current
-        if (audio) {
-          setSmoothTime(audio.currentTime)
-          setIsAudioPlaying(!audio.paused && !audio.ended)
+        if (isYouTubeMode && youTubePlayer && isYouTubeReady) {
+          setSmoothTime(youTubePlayer.getCurrentTime())
+          setIsAudioPlaying(youTubePlayer.getPlayerState() === window.YT?.LoadingState.PLAYING)
+        } else {
+          const audio = audioRef.current
+          if (audio) {
+            setSmoothTime(audio.currentTime)
+            setIsAudioPlaying(!audio.paused && !audio.ended)
+          }
         }
       }
       rafRef.current = requestAnimationFrame(tick)
@@ -72,30 +226,112 @@ export function MusicPlayer({
       active = false
       cancelAnimationFrame(rafRef.current)
     }
-  }, [audioRef])
+  }, [audioRef, isYouTubeMode, youTubePlayer, isYouTubeReady])
 
   const handleSeek = useCallback((value: number[]) => {
-    onSeek(value[0])
-  }, [onSeek])
+    if (isYouTubeMode && youTubePlayer) {
+      youTubePlayer.seekTo(value[0], true)
+      if (socket) {
+        socket.emit('seek', value[0])
+      }
+    } else {
+      onSeek(value[0])
+    }
+  }, [onSeek, isYouTubeMode, youTubePlayer, socket])
+
+  const handlePlayPause = useCallback(() => {
+    if (isYouTubeMode && youTubePlayer) {
+      if (isAudioPlaying) {
+        youTubePlayer.pauseVideo()
+        onPause()
+      } else {
+        youTubePlayer.playVideo()
+        onPlay()
+      }
+    } else {
+      if (isAudioPlaying) {
+        onPause()
+      } else {
+        onPlay()
+      }
+    }
+  }, [isYouTubeMode, youTubePlayer, isAudioPlaying, onPlay, onPause])
 
   const toggleMute = useCallback(() => {
-    if (audioRef.current) {
+    if (isYouTubeMode && youTubePlayer) {
+      const isMutedNow = youTubePlayer.isMuted?.()
+      if (isMutedNow) {
+        youTubePlayer.unMute()
+        setIsMuted(false)
+      } else {
+        youTubePlayer.mute()
+        setIsMuted(true)
+      }
+    } else if (audioRef.current) {
       audioRef.current.muted = !isMuted
       setIsMuted(!isMuted)
     }
-  }, [audioRef, isMuted])
+  }, [audioRef, isMuted, isYouTubeMode, youTubePlayer])
 
   const handleVolumeChange = useCallback((value: number[]) => {
     const vol = value[0]
     if (vol > 0 && isMuted) {
       setIsMuted(false)
-      if (audioRef.current) audioRef.current.muted = false
+      if (isYouTubeMode && youTubePlayer) {
+        youTubePlayer.unMute()
+        youTubePlayer.setVolume(vol * 100)
+      } else if (audioRef.current) {
+        audioRef.current.muted = false
+        audioRef.current.volume = vol
+      }
+    } else {
+      setVolume(vol)
+      if (isYouTubeMode && youTubePlayer) {
+        youTubePlayer.setVolume(vol * 100)
+      } else if (audioRef.current) {
+        audioRef.current.volume = vol
+      }
     }
-    setVolume(vol)
-    if (audioRef.current) {
-      audioRef.current.volume = vol
+  }, [audioRef, isMuted, isYouTubeMode, youTubePlayer])
+
+  // Search YouTube
+  const searchYouTube = useCallback(async (query: string) => {
+    if (!query.trim()) return
+    setIsSearching(true)
+    try {
+      // Using a simple proxy to avoid CORS - in production use your own backend
+      const response = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=${encodeURIComponent(query)}&type=video&key=AIzaSyDummy_Key_Replace_With_Real_One`)
+      // Fallback: extract video IDs from URLs user pastes
+      const youtubeRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/gi
+      const matches = [...query.matchAll(youtubeRegex)]
+      if (matches.length > 0) {
+        const videoId = matches[0][1]
+        setSearchResults([{
+          id: videoId,
+          title: 'Vídeo do YouTube',
+          artist: 'YouTube',
+          duration: 0,
+          thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+        }])
+      }
+    } catch (error) {
+      console.error('YouTube search error:', error)
+    } finally {
+      setIsSearching(false)
     }
-  }, [audioRef, isMuted])
+  }, [])
+
+  const selectYouTubeVideo = useCallback((videoId: string) => {
+    if (socket) {
+      socket.emit('change-track', {
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        source: 'youtube',
+      })
+    }
+    setShowSearch(false)
+    setSearchResults([])
+    setSearchQuery('')
+  }, [socket])
 
   // Volume popup state
   const [showVolume, setShowVolume] = useState(false)
@@ -124,22 +360,18 @@ export function MusicPlayer({
     }
   }, [])
 
-  // Close volume popup on outside tap (mobile) or mouse leave (desktop)
   useEffect(() => {
     if (!showVolume) return
-
     const handleClickOutside = (e: MouseEvent | TouchEvent) => {
       const popup = volumePopupRef.current
       if (popup && !popup.contains(e.target as Node)) {
         setShowVolume(false)
       }
     }
-
     const timer = setTimeout(() => {
       document.addEventListener('mousedown', handleClickOutside)
       document.addEventListener('touchstart', handleClickOutside, { passive: true })
     }, 100)
-
     return () => {
       clearTimeout(timer)
       document.removeEventListener('mousedown', handleClickOutside)
@@ -147,15 +379,107 @@ export function MusicPlayer({
     }
   }, [showVolume])
 
-  // Volume icon based on level
   const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
+  const showPlaying = isHost ? (room?.isPlaying ?? false) : isAudioPlaying
+  const hasSyncedLyrics = currentTrack?.lyrics ? isLrcFormat(currentTrack.lyrics) : false
+  const maxTime = isYouTubeMode && youTubePlayer ? youTubePlayer.getDuration?.() || 100 : (currentTrack?.duration || 100)
 
   return (
     <div className="w-full">
+      {/* Hidden YouTube player container */}
+      {isYouTubeMode && (
+        <div ref={playerContainerRef} className="absolute opacity-0 pointer-events-none -z-10" style={{ width: '1px', height: '1px' }} />
+      )}
+
+      {/* Source indicator and search toggle */}
+      <div className="flex items-center justify-between mb-2 sm:mb-3">
+        <div className="flex items-center gap-2">
+          {isYouTubeMode ? (
+            <span className="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded-full flex items-center gap-1">
+              <Youtube className="w-3 h-3" />
+              YouTube
+            </span>
+          ) : currentTrack?.source === 'local' ? (
+            <span className="text-[10px] bg-zinc-700 text-white px-2 py-0.5 rounded-full flex items-center gap-1">
+              <Music className="w-3 h-3" />
+              Local
+            </span>
+          ) : null}
+        </div>
+        {isHost && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowSearch(!showSearch)}
+            className="h-7 text-xs text-zinc-400 hover:text-white"
+          >
+            {showSearch ? <X className="w-3 h-3 mr-1" /> : <Search className="w-3 h-3 mr-1" />}
+            {showSearch ? 'Cancelar' : 'YouTube'}
+          </Button>
+        )}
+      </div>
+
+      {/* YouTube Search Panel */}
+      {showSearch && isHost && (
+        <div className="mb-3 sm:mb-4 p-3 bg-zinc-800/50 border border-zinc-700/50 rounded-xl">
+          <div className="flex gap-2 mb-2">
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Cole URL ou busque no YouTube..."
+              className="flex-1 bg-zinc-900 border-zinc-700 text-sm h-9"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  searchYouTube(searchQuery)
+                }
+              }}
+            />
+            <Button
+              onClick={() => searchYouTube(searchQuery)}
+              disabled={isSearching || !searchQuery.trim()}
+              size="sm"
+              className="h-9 bg-rose-600 hover:bg-rose-700"
+            >
+              {isSearching ? '...' : 'Buscar'}
+            </Button>
+          </div>
+          {searchResults.length > 0 && (
+            <div className="space-y-2 max-h-48 overflow-y-auto">
+              {searchResults.map((result) => (
+                <button
+                  key={result.id}
+                  onClick={() => selectYouTubeVideo(result.id)}
+                  className="w-full flex items-center gap-3 p-2 bg-zinc-900/50 hover:bg-zinc-700/50 rounded-lg transition-colors text-left"
+                >
+                  <img
+                    src={result.thumbnail}
+                    alt={result.title}
+                    className="w-16 h-12 object-cover rounded"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-white truncate">{result.title}</p>
+                    <p className="text-xs text-zinc-500 truncate">{result.artist}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {searchQuery && !isSearching && searchResults.length === 0 && (
+            <p className="text-xs text-zinc-500 text-center py-2">
+              Cole uma URL do YouTube ou digite para buscar
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Now playing info */}
       <div className="flex items-center gap-3 sm:gap-3 mb-2 sm:mb-4 min-w-0">
         <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl sm:rounded-lg bg-zinc-800 flex items-center justify-center flex-shrink-0">
-          <div className={`w-4 h-4 sm:w-3.5 sm:h-3.5 rounded-full ${currentTrack ? 'bg-rose-500 animate-pulse' : 'bg-zinc-600'}`} />
+          {isYouTubeMode ? (
+            <Youtube className="w-5 h-5 sm:w-6 sm:h-6 text-red-500" />
+          ) : (
+            <div className={`w-4 h-4 sm:w-3.5 sm:h-3.5 rounded-full ${currentTrack ? 'bg-rose-500 animate-pulse' : 'bg-zinc-600'}`} />
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm sm:text-sm font-semibold text-white truncate">
