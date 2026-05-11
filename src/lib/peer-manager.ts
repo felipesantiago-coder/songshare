@@ -408,6 +408,7 @@ export class PeerManager {
       case 'request-seek':
       case 'request-next':
       case 'request-previous':
+      case 'change-track':
         if (this.isHost) {
           this.emit(data.type, { ...data, senderPeerId })
         }

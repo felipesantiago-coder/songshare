@@ -9,6 +9,7 @@ import { Slider } from '@/components/ui/slider'
 import { Input } from '@/components/ui/input'
 import { useSongShareStore } from '@/store/songshare'
 import { isLrcFormat } from '@/lib/lrc-parser'
+import { searchYouTube as searchYouTubeApi, type YouTubeVideo } from '@/lib/youtube-search'
 
 interface YouTubeTrack {
   id: string
@@ -294,16 +295,16 @@ export function MusicPlayer({
     }
   }, [audioRef, isMuted, isYouTubeMode, youTubePlayer])
 
-  // Search YouTube
+  // Search YouTube (URL extraction or API search by name)
   const searchYouTube = useCallback(async (query: string) => {
     if (!query.trim()) return
     setIsSearching(true)
+    setSearchResults([])
     try {
-      // Using a simple proxy to avoid CORS - in production use your own backend
-      const response = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=${encodeURIComponent(query)}&type=video&key=AIzaSyDummy_Key_Replace_With_Real_One`)
-      // Fallback: extract video IDs from URLs user pastes
+      // First, try to extract video IDs from URLs user pastes
       const youtubeRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/gi
       const matches = [...query.matchAll(youtubeRegex)]
+      
       if (matches.length > 0) {
         const videoId = matches[0][1]
         setSearchResults([{
@@ -313,9 +314,20 @@ export function MusicPlayer({
           duration: 0,
           thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
         }])
+      } else {
+        // If not a URL, use the API to search by name
+        const results = await searchYouTubeApi(query)
+        setSearchResults(results.map(r => ({
+          id: r.id,
+          title: r.title,
+          artist: r.channelTitle,
+          duration: 0,
+          thumbnail: r.thumbnail,
+        })))
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('YouTube search error:', error)
+      alert(`Erro na busca: ${error.message || 'Verifique se a chave de API está configurada no Vercel.'}`)
     } finally {
       setIsSearching(false)
     }

@@ -738,6 +738,67 @@ export function usePeerShare() {
       }
     })
 
+    // Handle change-track requests from guests (YouTube or local)
+    const unsubChangeTrack = manager.on('change-track', (data: { url: string; source?: string; senderPeerId?: string }) => {
+      if (!manager.isHost) return
+      const st = useSongShareStore.getState()
+      if (!st.room || !data.url) return
+
+      // Find if track already exists in playlist
+      const existingIndex = st.room.playlist.findIndex(t => t.url === data.url)
+      
+      let newTrack: Track
+      if (existingIndex >= 0) {
+        // Track exists, just switch to it
+        const updated: RoomState = { ...st.room, currentTrackIndex: existingIndex, currentTime: 0 }
+        useSongShareStore.getState().setRoom(updated)
+        manager.broadcast({
+          type: 'track-changed',
+          currentTrackIndex: existingIndex,
+          currentTime: 0,
+          playlist: updated.playlist,
+        })
+        return
+      }
+
+      // New track - create track object
+      if (data.source == 'youtube' || data.url.includes('youtube.com') || data.url.includes('youtu.be')) {
+        const videoId = data.url.split(/(?:/|v=|.be/)([^&?#]+)/)[1]
+        newTrack = {
+          id: `yt-${videoId}-${Date.now()}`,
+          title: 'Vídeo do YouTube',
+          artist: 'YouTube',
+          url: data.url,
+          duration: 0,
+          source: 'youtube',
+        }
+      } else {
+        // Local file - should have been uploaded already
+        newTrack = {
+          id: `local-${Date.now()}`,
+          title: 'Faixa Local',
+          artist: 'Desconhecido',
+          url: data.url,
+          duration: 0,
+          source: 'local',
+        }
+      }
+
+      const updated: RoomState = {
+        ...st.room,
+        playlist: [...st.room.playlist, newTrack],
+        currentTrackIndex: st.room.playlist.length,
+        currentTime: 0,
+      }
+      useSongShareStore.getState().setRoom(updated)
+      manager.broadcast({
+        type: 'track-changed',
+        currentTrackIndex: updated.currentTrackIndex,
+        currentTime: 0,
+        playlist: updated.playlist,
+      })
+    })
+
     /* ─── Chat ──────────────────────────────────── */
 
     const unsubChat = manager.on('chat-message', (data: { message: ChatMessage } | ChatMessage) => {
@@ -764,7 +825,7 @@ export function usePeerShare() {
         unsubLyrics,
         unsubChunk, unsubReqData, unsubChat,
         unsubRequestPlay, unsubRequestPause, unsubRequestSeek,
-        unsubRequestNext, unsubRequestPrevious,
+        unsubRequestNext, unsubRequestPrevious, unsubChangeTrack,
         unsubConnected, unsubDisconnected,
       ].forEach((fn) => fn?.())
 
