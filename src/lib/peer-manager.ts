@@ -521,7 +521,8 @@ export class PeerManager {
         )
       }
     })
-    await Promise.all(promises)
+    // Use Promise.allSettled to avoid failure if one peer is slow or disconnected
+    await Promise.allSettled(promises)
   }
 
   /** Retorna a lista de peer IDs conectados (data connections). */

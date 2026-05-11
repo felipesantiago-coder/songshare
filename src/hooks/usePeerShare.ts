@@ -76,9 +76,16 @@ export function usePeerShare() {
       const average = sum / dataArray.length / 255
       const isSpeaking = average > SPEAKING_THRESHOLD
       setVoiceStreamSpeaking(peerId, isSpeaking)
-    }, 150)
+    }, 200)
 
     speakingIntervalsRef.current.set(peerId, interval)
+    
+    // Store audioContext for cleanup to prevent memory leak
+    return () => {
+      clearInterval(interval)
+      speakingIntervalsRef.current.delete(peerId)
+      audioContext.close()
+    }
   }, [setVoiceStreamSpeaking])
 
   const stopSpeakingDetection = useCallback((peerId: string) => {
@@ -97,6 +104,10 @@ export function usePeerShare() {
     // This handles the case where signaling dropped, the 'close' event never
     // arrived, and the peer is now re-calling with a fresh MediaConnection.
     if (store.voiceStreams.has(peerId)) {
+      const oldStream = store.voiceStreams.get(peerId)
+      if (oldStream?.audioElement?.srcObject) {
+        URL.revokeObjectURL(oldStream.audioElement.srcObject as any)
+      }
       store.removeVoiceStream(peerId)
       stopSpeakingDetection(peerId)
     }
@@ -120,7 +131,15 @@ export function usePeerShare() {
     store.addVoiceStream(peerId, info)
     // startSpeakingDetection creates its own AudioContext+AnalyserNode for
     // speaking analysis (not connected to destination, so no audio routing issue)
-    startSpeakingDetection(peerId, remoteStream)
+    const cleanup = startSpeakingDetection(peerId, remoteStream)
+    
+    // Store cleanup function for later use
+    return () => {
+      if (cleanup) cleanup()
+      if (audioElement.srcObject) {
+        URL.revokeObjectURL(audioElement.srcObject as any)
+      }
+    }
   }, [startSpeakingDetection])
 
   // ── Init PeerManager + event handlers ────────────
@@ -506,6 +525,11 @@ export function usePeerShare() {
       if (counts.get(data.trackId)! >= data.totalChunks) {
         const assembled = getAssembledBlob(data.trackId)
         if (assembled) {
+          // Revoke old URL for this track to prevent memory leak
+          const store = useSongShareStore.getState()
+          const oldUrl = store.audioUrls.get(data.trackId)
+          if (oldUrl) URL.revokeObjectURL(oldUrl)
+          
           const url = URL.createObjectURL(new Blob([assembled], { type: 'audio/mpeg' }))
           useSongShareStore.getState().setAudioUrl(data.trackId, url)
 
@@ -700,9 +724,9 @@ export function usePeerShare() {
     if (!audio) return
 
     const onTimeUpdate = () => {
-      // Throttle: only update Zustand store ~2x/sec to avoid excessive re-renders
+      // Throttle: only update Zustand store ~4x/sec to avoid excessive re-renders
       const now = performance.now()
-      if (now - lastTimeUpdateRef.current < 500) return
+      if (now - lastTimeUpdateRef.current < 250) return
       lastTimeUpdateRef.current = now
       useSongShareStore.getState().updateRoom({ currentTime: audio.currentTime })
     }
@@ -881,6 +905,9 @@ export function usePeerShare() {
       // Small pause every 5 chunks to avoid overwhelming the DataChannel
       if (i % 5 === 0) await new Promise((r) => setTimeout(r, 5))
     }
+
+    // Revoke blob URL after sending all chunks to prevent memory leak
+    URL.revokeObjectURL(blobUrl)
 
     // Broadcast playlist AFTER chunks are sent so guests have audio data available
     manager.broadcast({
@@ -1111,12 +1138,28 @@ export function usePeerShare() {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          sampleRate: 16000,
+          channelCount: 1,
         }
         if (realMic?.deviceId) {
           constraints.deviceId = { exact: realMic.deviceId }
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
+        let stream: MediaStream | null = null
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
+        } catch (err) {
+          // Fallback: if specific device fails, try default microphone
+          console.warn('[SongShare] Failed to get specific mic, trying default...', err)
+          const fallbackConstraints: MediaTrackConstraints = {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 16000,
+            channelCount: 1,
+          }
+          stream = await navigator.mediaDevices.getUserMedia({ audio: fallbackConstraints })
+        }
 
         // Diagnostic log — helps identify which device was actually used
         const track = stream.getAudioTracks()[0]

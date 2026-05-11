@@ -224,6 +224,12 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
       const info = state.voiceStreams.get(peerId)
       if (info) {
         info.audioElement.pause()
+        // Revoke blob URL if srcObject is a MediaStream with blob URL
+        if (info.audioElement.srcObject) {
+          try {
+            URL.revokeObjectURL(info.audioElement.srcObject as any)
+          } catch {}
+        }
         info.audioElement.srcObject = null
         if (info.gainNode) info.gainNode.disconnect()
         if (info.audioContext) info.audioContext.close().catch(() => {})
