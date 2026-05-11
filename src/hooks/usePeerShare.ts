@@ -76,9 +76,16 @@ export function usePeerShare() {
       const average = sum / dataArray.length / 255
       const isSpeaking = average > SPEAKING_THRESHOLD
       setVoiceStreamSpeaking(peerId, isSpeaking)
-    }, 150)
+    }, 200)
 
     speakingIntervalsRef.current.set(peerId, interval)
+    
+    // Store audioContext reference for cleanup
+    const store = useSongShareStore.getState()
+    const voiceStream = store.voiceStreams.get(peerId)
+    if (voiceStream) {
+      voiceStream.audioContext = audioContext
+    }
   }, [setVoiceStreamSpeaking])
 
   const stopSpeakingDetection = useCallback((peerId: string) => {
@@ -86,6 +93,13 @@ export function usePeerShare() {
     if (interval) {
       clearInterval(interval)
       speakingIntervalsRef.current.delete(peerId)
+    }
+    
+    // Close AudioContext to prevent memory leak
+    const store = useSongShareStore.getState()
+    const voiceStream = store.voiceStreams.get(peerId)
+    if (voiceStream?.audioContext) {
+      voiceStream.audioContext.close().catch(() => {})
     }
   }, [])
 
@@ -1151,12 +1165,27 @@ export function usePeerShare() {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          sampleRate: 16000,
+          channelCount: 1,
         }
         if (realMic?.deviceId) {
           constraints.deviceId = { exact: realMic.deviceId }
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
+        let stream: MediaStream
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
+        } catch (err) {
+          // Fallback: try without specific device ID and with minimal constraints
+          console.warn('[SongShare] Mic constraints failed, trying fallback:', err)
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            }
+          })
+        }
 
         // Diagnostic log — helps identify which device was actually used
         const track = stream.getAudioTracks()[0]

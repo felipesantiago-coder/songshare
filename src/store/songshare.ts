@@ -164,6 +164,11 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
 
   setAudioUrl: (trackId, url) =>
     set((state) => {
+      // Revoke old URL to prevent memory leak
+      const oldUrl = state.audioCache.get(trackId)
+      if (oldUrl) {
+        try { URL.revokeObjectURL(oldUrl) } catch {}
+      }
       const newCache = new Map(state.audioCache)
       newCache.set(trackId, url)
       return { audioCache: newCache }
@@ -287,6 +292,13 @@ export const useSongShareStore = create<SongShareStore>((set, get) => ({
     })
     const micStream = get().micStream
     if (micStream) micStream.getTracks().forEach((t) => t.stop())
+    
+    // Revoke all blob URLs to prevent memory leaks
+    const audioCache = get().audioCache
+    audioCache.forEach((url) => {
+      try { URL.revokeObjectURL(url) } catch {}
+    })
+    
     set({
       ...initialState,
       audioCache: new Map<string, string>(),
