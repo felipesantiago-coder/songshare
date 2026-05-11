@@ -335,31 +335,33 @@ export function MusicPlayer({
   }, [])
 
   const selectYouTubeVideo = useCallback((videoId: string) => {
-    console.log("[MusicPlayer] Selecting YouTube video:", videoId, "Socket connected:", !!socket);
-    
     // CRITICAL FIX: Get fresh socket reference directly from store state at call time
     const currentSocket = useSongShareStore.getState().socket;
-    
-    if (!currentSocket || typeof currentSocket.emit !== "function") {
-      console.error("[MusicPlayer] Socket is null or invalid, cannot emit change-track");
-      alert("Conexão perdida. Recarregue a página.");
+    const isConnected = useSongShareStore.getState().isConnected;
+
+    console.log("[MusicPlayer] Selecting YouTube video:", videoId, "Socket Valid:", !!currentSocket, "Connected:", isConnected);
+
+    if (!currentSocket || typeof currentSocket.emit !== "function" || !isConnected) {
+      console.error("[MusicPlayer] Socket not ready. Connected:", isConnected, "Socket Exists:", !!currentSocket);
+      alert("Aguardando conexão... Por favor, aguarde alguns segundos e tente novamente.");
       return;
     }
 
     try {
-      console.log("[MusicPlayer] Emitting change-track event with socket ID:", currentSocket.id);
-      currentSocket.emit("change-track", {
+      console.log("[MusicPlayer] Emitting change-track event for video:", videoId);
+      currentSocket.emit('change-track', {
+        source: 'youtube',
         url: `https://www.youtube.com/watch?v=${videoId}`,
-        source: "youtube",
+        videoId: videoId
       });
-    } catch (err) {
-      console.error("[MusicPlayer] Error emitting event:", err);
+      setShowSearch(false);
+      setSearchResults([]);
+      setSearchQuery("");
+    } catch (error) {
+      console.error("[MusicPlayer] Failed to emit change-track:", error);
+      alert("Erro ao enviar comando. Verifique sua conexão.");
     }
-
-    setShowSearch(false);
-    setSearchResults([]);
-    setSearchQuery("");
-  }, []); // Removed socket dependency, now fetches fresh state on every call
+  }, []);
 
   // Volume popup state
   const [showVolume, setShowVolume] = useState(false)
