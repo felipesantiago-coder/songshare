@@ -25,6 +25,10 @@ export function usePeerShare() {
   // Track the intended start time for the current track (fixes sync on track change)
   const intendedStartTimeRef = useRef<number>(0)
   const lastTrackChangeIdRef = useRef<string>('')
+  // Wake lock reference to prevent screen/CPU sleep when mic is active
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null)
+  // Keep-alive interval for data channels
+  const keepAliveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ── Zustand selectors ────────────────────────────
   const room = useSongShareStore((s) => s.room)
@@ -100,6 +104,53 @@ export function usePeerShare() {
     const voiceStream = store.voiceStreams.get(peerId)
     if (voiceStream?.audioContext) {
       voiceStream.audioContext.close().catch(() => {})
+    }
+  }, [])
+
+  // ── Wake Lock helper to prevent screen/CPU sleep ───────
+  const requestWakeLock = useCallback(async () => {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await navigator.wakeLock.request('screen')
+        console.log('[SongShare] Wake Lock acquired')
+        
+        // Re-acquire wake lock if it's released (e.g., when user switches tabs)
+        wakeLockRef.current.addEventListener('release', () => {
+          console.log('[SongShare] Wake Lock released')
+        })
+      } catch (err) {
+        console.warn('[SongShare] Wake Lock not supported or failed:', err)
+      }
+    }
+  }, [])
+
+  const releaseWakeLock = useCallback(() => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().catch(() => {})
+      wakeLockRef.current = null
+      console.log('[SongShare] Wake Lock released manually')
+    }
+  }, [])
+
+  // ── Keep-alive ping to prevent data channel timeout ───────
+  const startKeepAlive = useCallback(() => {
+    if (keepAliveIntervalRef.current) return
+    
+    keepAliveIntervalRef.current = setInterval(() => {
+      const manager = managerRef.current
+      if (manager && manager.isHost) {
+        // Send a lightweight ping to all connected peers
+        manager.broadcast({ type: 'keep-alive', timestamp: Date.now() })
+      }
+    }, 5000) // Ping every 5 seconds
+    console.log('[SongShare] Keep-alive started')
+  }, [])
+
+  const stopKeepAlive = useCallback(() => {
+    if (keepAliveIntervalRef.current) {
+      clearInterval(keepAliveIntervalRef.current)
+      keepAliveIntervalRef.current = null
+      console.log('[SongShare] Keep-alive stopped')
     }
   }, [])
 
@@ -1225,7 +1276,30 @@ export function usePeerShare() {
         alert('Não foi possível acessar o microfone. Verifique as permissões.')
       }
     }
-  }, [setMicStream, setMicActive, setMicMuted, setUserMicState])
+  }, [setMicStream, setMicActive, setMicMuted, setUserMicState, requestWakeLock, releaseWakeLock, startKeepAlive, stopKeepAlive])
+
+  // ── Effect: Manage Wake Lock and Keep-Alive when mic state changes ───────
+  useEffect(() => {
+    const store = useSongShareStore.getState()
+    
+    if (store.isMicActive) {
+      // Request wake lock to prevent screen/CPU sleep
+      requestWakeLock()
+      // Start keep-alive pings to prevent data channel timeout
+      startKeepAlive()
+    } else {
+      // Release wake lock when mic is off
+      releaseWakeLock()
+      // Stop keep-alive pings
+      stopKeepAlive()
+    }
+    
+    // Cleanup on unmount or when dependencies change
+    return () => {
+      releaseWakeLock()
+      stopKeepAlive()
+    }
+  }, [requestWakeLock, releaseWakeLock, startKeepAlive, stopKeepAlive])
 
   const toggleMute = useCallback(() => {
     const store = useSongShareStore.getState()
