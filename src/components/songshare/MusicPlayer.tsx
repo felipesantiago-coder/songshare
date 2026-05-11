@@ -335,27 +335,31 @@ export function MusicPlayer({
   }, [])
 
   const selectYouTubeVideo = useCallback((videoId: string) => {
-    console.log('[MusicPlayer] Selecting YouTube video:', videoId, 'Socket connected:', !!socket);
-    if (!socket) {
-      console.error('[MusicPlayer] Socket is null, cannot emit change-track');
-      alert('Conexão perdida. Recarregue a página.');
+    console.log("[MusicPlayer] Selecting YouTube video:", videoId, "Socket connected:", !!socket);
+    
+    // CRITICAL FIX: Get fresh socket reference directly from store state at call time
+    const currentSocket = useSongShareStore.getState().socket;
+    
+    if (!currentSocket || typeof currentSocket.emit !== "function") {
+      console.error("[MusicPlayer] Socket is null or invalid, cannot emit change-track");
+      alert("Conexão perdida. Recarregue a página.");
       return;
     }
-    
+
     try {
-      console.log('[MusicPlayer] Emitting change-track event');
-      socket.emit('change-track', {
+      console.log("[MusicPlayer] Emitting change-track event with socket ID:", currentSocket.id);
+      currentSocket.emit("change-track", {
         url: `https://www.youtube.com/watch?v=${videoId}`,
-        source: 'youtube',
+        source: "youtube",
       });
     } catch (err) {
-      console.error('[MusicPlayer] Error emitting event:', err);
+      console.error("[MusicPlayer] Error emitting event:", err);
     }
-    
+
     setShowSearch(false);
     setSearchResults([]);
-    setSearchQuery('');
-  }, [socket]);
+    setSearchQuery("");
+  }, []); // Removed socket dependency, now fetches fresh state on every call
 
   // Volume popup state
   const [showVolume, setShowVolume] = useState(false)
