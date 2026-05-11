@@ -335,19 +335,26 @@ export function MusicPlayer({
 
   const selectYouTubeVideo = useCallback((videoId: string) => {
     console.log('[MusicPlayer] Selecting YouTube video:', videoId, 'Socket connected:', !!socket);
-    if (socket) {
+    if (!socket) {
+      console.error('[MusicPlayer] Socket is null, cannot emit change-track');
+      alert('Conexão perdida. Recarregue a página.');
+      return;
+    }
+    
+    try {
       console.log('[MusicPlayer] Emitting change-track event');
       socket.emit('change-track', {
         url: `https://www.youtube.com/watch?v=${videoId}`,
         source: 'youtube',
-      })
-    } else {
-      console.error('[MusicPlayer] Socket is null, cannot emit change-track');
+      });
+    } catch (err) {
+      console.error('[MusicPlayer] Error emitting event:', err);
     }
-    setShowSearch(false)
-    setSearchResults([])
-    setSearchQuery('')
-  }, [socket])
+    
+    setShowSearch(false);
+    setSearchResults([]);
+    setSearchQuery('');
+  }, [socket]);
 
   // Volume popup state
   const [showVolume, setShowVolume] = useState(false)
