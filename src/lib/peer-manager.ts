@@ -2,20 +2,15 @@ import Peer, { DataConnection, MediaConnection } from 'peerjs'
 
 export const PEER_PREFIX = 'songshare-'
 
-// Configuração do Servidor de Sinalização
 const PEERJS_HOST_ENV = process.env.NEXT_PUBLIC_PEERJS_HOST
 const IS_CUSTOM_SERVER = !!PEERJS_HOST_ENV && PEERJS_HOST_ENV !== '0.peerjs.com'
 
-// Se for servidor customizado, usa o host. A porta será 443 (padrão HTTPS) ou a definida.
-// O Railway roteia automaticamente a porta pública 443 para a PORT interna do container.
 const PEERJS_HOST = PEERJS_HOST_ENV || '0.peerjs.com'
-const PEERJS_PORT = IS_CUSTOM_SERVER ? undefined : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
+// Força undefined para usar a porta padrão do protocolo (443 para wss)
+const PEERJS_PORT = undefined 
 const PEERJS_PATH = '/peerjs'
 const PEERJS_SECURE = true 
 
-/**
- * Calcula offset de relógio e latência usando algoritmo de Cristian
- */
 export function calculateClockSync(sentTime: number, receivedTime: number, serverTime: number): { clockOffset: number, rtt: number } {
   const rtt = receivedTime - sentTime
   const clockOffset = serverTime - (sentTime + rtt / 2)
@@ -25,19 +20,14 @@ export function calculateClockSync(sentTime: number, receivedTime: number, serve
 export function scheduleAction(executeAt: number, action: () => void, minLeadTime = 100): void {
   const now = Date.now()
   const delay = executeAt - now
-  if (delay <= minLeadTime) {
-    action()
-  } else {
-    setTimeout(action, delay - minLeadTime)
-  }
+  if (delay <= minLeadTime) action()
+  else setTimeout(action, delay - minLeadTime)
 }
 
 export function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
-  for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
+  for (let i = 0; i < 6; i++) code += chars.charAt(Math.floor(Math.random() * chars.length))
   return code
 }
 
@@ -51,12 +41,10 @@ export class PeerManager {
   peer: Peer | null = null
   connections = new Map<string, DataConnection>()
   mediaCalls = new Map<string, MediaConnection>()
-
   roomCode = ''
   username = ''
   userId = ''
   isHost = false
-
   private handlers = new Map<string, Set<Handler>>()
   private reconnectTimer: ReturnType<typeof setInterval> | null = null
   private _reconnectingToHost: string | null = null
@@ -67,16 +55,12 @@ export class PeerManager {
     return () => this.off(event, handler)
   }
 
-  off(event: string, handler: Handler) {
-    this.handlers.get(event)?.delete(handler)
-  }
+  off(event: string, handler: Handler) { this.handlers.get(event)?.delete(handler) }
 
   private emit(event: string, data?: any) {
     const set = this.handlers.get(event)
     if (!set) return
-    set.forEach((h) => {
-      try { h(data) } catch (e) { console.error(`[SongShare] Handler error (${event}):`, e) }
-    })
+    set.forEach((h) => { try { h(data) } catch (e) { console.error(`[SongShare] Handler error (${event}):`, e) } })
   }
 
   async connect(maxRetries = 2): Promise<void> {
@@ -88,6 +72,9 @@ export class PeerManager {
         return
       } catch (err) {
         lastError = err
+        // Log detalhado do erro para diagnóstico
+        console.error(`[SongShare] Erro detalhado na tentativa ${attempt + 1}:`, err)
+        
         if (attempt < maxRetries) {
           console.warn(`[SongShare] Initial connection failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in 3s...`)
           await new Promise((r) => setTimeout(r, 3000))
@@ -98,23 +85,23 @@ export class PeerManager {
     throw lastError
   }
 
-    private _createPeer(id?: string): Promise<string> {
+  private _createPeer(id?: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const peerId = id || generateId()
-
-      console.log(`[SongShare] Tentando conectar em: wss://${PEERJS_HOST}${PEERJS_PATH}`)
+      const url = `wss://${PEERJS_HOST}${PEERJS_PATH}`
+      console.log(`[SongShare] Tentando conectar em: ${url}`)
 
       this.peer = new Peer(peerId, {
         host: PEERJS_HOST,
-        // Força undefined para usar a porta padrão do protocolo (443 para wss)
-        port: undefined, 
+        port: PEERJS_PORT,
         path: PEERJS_PATH,
-        secure: true, // Garante WSS
-        debug: 2,     // Habilita logs internos do PeerJS no console
+        secure: PEERJS_SECURE,
+        debug: 2, // Aumenta o debug para ver detalhes internos no console
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
           ],
         },
       })
@@ -122,14 +109,18 @@ export class PeerManager {
       const timeout = setTimeout(() => {
         this.peer?.destroy()
         this.peer = null
-        reject(new Error('Timeout: Servidor não respondeu em 15s'))
+        reject(new Error('Timeout ao conectar ao servidor de sinalização'))
       }, 15000)
 
       this.peer.on('open', (openedId) => {
         clearTimeout(timeout)
         this.stopReconnectLoop()
         this.emit('connected')
-        console.log(`[SongShare] ✅ CONECTADO! ID: ${openedId}`)
+        console.log(`[SongShare] Conectado com sucesso! ID: ${openedId}`)
+        if (!this.isHost && this.roomCode && !this.connections.has(`${PEER_PREFIX}${this.roomCode}`)) {
+          console.log('[SongShare] Signaling reconnected, re-establishing DataConnection to host...')
+          this._attemptReconnectToHost(`${PEER_PREFIX}${this.roomCode}`)
+        }
         resolve(openedId)
       })
 
@@ -138,22 +129,26 @@ export class PeerManager {
 
       this.peer.on('error', (err) => {
         clearTimeout(timeout)
-        console.error('❌ ERRO CRÍTICO DO PEER:', err)
-        console.error('Tipo do erro:', err.type)
+        console.error('[SongShare] Peer error type:', err.type)
+        console.error('[SongShare] Peer error details:', err)
         
-        if (err.type === 'ssl-unavailable') {
-          console.error('Solução: O servidor não suporta SSL ou está usando HTTP em vez de HTTPS.')
-        } else if (err.type === 'network') {
-          console.error('Solução: Problema de rede, firewall ou CORS bloqueando o WebSocket.')
+        // Tratamento específico para erros de SSL/Network
+        if (err.type === 'ssl-unavailable' || err.type === 'network') {
+           console.error('[SongShare] Erro de SSL ou Rede. Verifique se o domínio tem HTTPS válido e CORS habilitado.')
         }
-        
         reject(err)
       })
 
       this.peer.on('disconnected', () => {
-        console.warn('[SongShare] Desconectado do servidor de sinalização.')
         this.emit('disconnected')
         this.startReconnectLoop()
+      })
+      
+      // Debug de eventos internos do socket
+      this.peer.on('socket', (socket) => {
+         socket.on('connect', () => console.log('[SongShare] Socket TCP/WSS conectado.'))
+         socket.on('disconnect', () => console.log('[SongShare] Socket desconectado.'))
+         socket.on('error', (e) => console.error('[SongShare] Erro interno do socket:', e))
       })
     })
   }
@@ -174,10 +169,7 @@ export class PeerManager {
   }
 
   private stopReconnectLoop() {
-    if (this.reconnectTimer) {
-      clearInterval(this.reconnectTimer)
-      this.reconnectTimer = null
-    }
+    if (this.reconnectTimer) { clearInterval(this.reconnectTimer); this.reconnectTimer = null }
   }
 
   async createRoom(username: string): Promise<string> {
@@ -185,7 +177,6 @@ export class PeerManager {
     this.userId = generateId()
     this.isHost = true
     this.connections.clear()
-
     let code: string | undefined
     for (let attempt = 0; attempt < 30; attempt++) {
       const candidate = generateRoomCode()
@@ -198,7 +189,6 @@ export class PeerManager {
         throw err
       }
     }
-
     if (!code) throw new Error('Não foi possível criar uma sala. Tente novamente.')
     this.roomCode = code
     this.emit('room-created', { code })
@@ -211,20 +201,11 @@ export class PeerManager {
     this.isHost = false
     this.roomCode = code.toUpperCase()
     this.connections.clear()
-
-    if (!this.peer || this.peer.destroyed || this.peer.disconnected) {
-      await this._createPeer()
-    }
-
+    if (!this.peer || this.peer.destroyed || this.peer.disconnected) await this._createPeer()
     const hostPeerId = `${PEER_PREFIX}${this.roomCode}`
-
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Nao foi possivel conectar. Verifique o codigo e tente novamente.'))
-      }, 15000)
-
+      const timeout = setTimeout(() => reject(new Error('Nao foi possivel conectar. Verifique o codigo e tente novamente.')), 15000)
       const conn = this.peer!.connect(hostPeerId, { reliable: true })
-
       conn.on('open', () => {
         clearTimeout(timeout)
         this.connections.set(conn.peer, conn)
@@ -232,19 +213,12 @@ export class PeerManager {
         conn.send({ type: 'join-request', username: this.username, userId: this.userId })
         resolve()
       })
-
-      conn.on('error', () => {
-        clearTimeout(timeout)
-        reject(new Error('Não foi possível conectar à sala. Verifique o código.'))
-      })
+      conn.on('error', () => { clearTimeout(timeout); reject(new Error('Não foi possível conectar à sala. Verifique o código.')) })
     })
   }
 
   private _handleIncoming(conn: DataConnection) {
-    conn.on('open', () => {
-      this.connections.set(conn.peer, conn)
-      this._wireConnection(conn)
-    })
+    conn.on('open', () => { this.connections.set(conn.peer, conn); this._wireConnection(conn) })
   }
 
   private _wireConnection(conn: DataConnection) {
@@ -263,17 +237,12 @@ export class PeerManager {
     if (this._reconnectingToHost === hostPeerId) return
     this._reconnectingToHost = hostPeerId
     console.warn('[SongShare] DataConnection to host lost, reconnecting...')
-
     let attempt = 0
     const tryConnect = () => {
       if (!this.roomCode || !this.peer || this.peer.destroyed || this.connections.has(hostPeerId)) {
-        this._reconnectingToHost = null
-        return
+        this._reconnectingToHost = null; return
       }
-      if (this.peer.disconnected) {
-        setTimeout(tryConnect, 5000)
-        return
-      }
+      if (this.peer.disconnected) { setTimeout(tryConnect, 5000); return }
       attempt++
       const backoff = Math.min(2000 * Math.pow(1.3, attempt - 1), 15000)
       try {
@@ -288,9 +257,7 @@ export class PeerManager {
         })
         newConn.on('error', () => { clearTimeout(timeout) })
         newConn.on('close', () => { clearTimeout(timeout) })
-      } catch (e) {
-        setTimeout(tryConnect, backoff)
-      }
+      } catch (e) { setTimeout(tryConnect, backoff) }
     }
     setTimeout(tryConnect, 1500)
   }
@@ -298,19 +265,10 @@ export class PeerManager {
   private _route(data: any, senderPeerId: string) {
     if (!data || typeof data !== 'object' || !data.type) return
     switch (data.type) {
-      case 'join-request':
-      case 'request-track-data':
-      case 'user-left-request':
-        if (this.isHost) this.emit(data.type, { ...data, peerId: senderPeerId })
-        break
-      case 'request-play':
-      case 'request-pause':
-      case 'request-seek':
-      case 'request-next':
-      case 'request-previous':
-      case 'change-track':
-        if (this.isHost) this.emit(data.type, { ...data, senderPeerId })
-        break
+      case 'join-request': case 'request-track-data': case 'user-left-request':
+        if (this.isHost) this.emit(data.type, { ...data, peerId: senderPeerId }); break
+      case 'request-play': case 'request-pause': case 'request-seek': case 'request-next': case 'request-previous': case 'change-track':
+        if (this.isHost) this.emit(data.type, { ...data, senderPeerId }); break
       default: {
         const { type: _eventType, ...payload } = data
         this.emit(_eventType, payload)
@@ -335,10 +293,7 @@ export class PeerManager {
     const dc = (conn as any)._dc || (conn as any).dataChannel
     if (dc) {
       let waits = 0
-      while (dc.bufferedAmount > maxBuffer && waits < 200) {
-        await new Promise((r) => setTimeout(r, 20))
-        waits++
-      }
+      while (dc.bufferedAmount > maxBuffer && waits < 200) { await new Promise((r) => setTimeout(r, 20)); waits++ }
     }
     try { conn.send(data); return true } catch (e) { console.error('[SongShare] sendChunkTo error:', e); return false }
   }
@@ -359,16 +314,8 @@ export class PeerManager {
     } catch (e) { console.error('[SongShare] callWithStream error:', e); return null }
   }
 
-  hangupMedia(peerId: string) {
-    const call = this.mediaCalls.get(peerId)
-    if (call) try { call.close() } catch{}
-    this.mediaCalls.delete(peerId)
-  }
-
-  hangupAllMedia() {
-    this.mediaCalls.forEach((call) => { try { call.close() } catch{} })
-    this.mediaCalls.clear()
-  }
+  hangupMedia(peerId: string) { const call = this.mediaCalls.get(peerId); if (call) try { call.close() } catch{}; this.mediaCalls.delete(peerId) }
+  hangupAllMedia() { this.mediaCalls.forEach((call) => { try { call.close() } catch{} }); this.mediaCalls.clear() }
 
   async broadcastChunk(data: any, maxBuffer = 1 * 1024 * 1024): Promise<void> {
     const promises: Promise<void>[] = []
@@ -376,10 +323,7 @@ export class PeerManager {
       if (conn.open) {
         promises.push((async () => {
           const dc = (conn as any)._dc || (conn as any).dataChannel
-          if (dc) {
-            let waits = 0
-            while (dc.bufferedAmount > maxBuffer && waits < 200) { await new Promise((r) => setTimeout(r, 20)); waits++ }
-          }
+          if (dc) { let waits = 0; while (dc.bufferedAmount > maxBuffer && waits < 200) { await new Promise((r) => setTimeout(r, 20)); waits++ } }
           try { conn.send(data) } catch (e) { console.error('[SongShare] broadcastChunk error:', e) }
         })())
       }
@@ -391,20 +335,13 @@ export class PeerManager {
   getMyPeerId(): string { return this.peer?.id || '' }
 
   destroy() {
-    this.stopReconnectLoop()
-    this._reconnectingToHost = null
-    this.hangupAllMedia()
-    this.connections.forEach((c) => { try { c.close() } catch{} })
-    this.connections.clear()
+    this.stopReconnectLoop(); this._reconnectingToHost = null; this.hangupAllMedia()
+    this.connections.forEach((c) => { try { c.close() } catch{} }); this.connections.clear()
     if (this.peer && !this.peer.destroyed) this.peer.destroy()
     this.peer = null
   }
 
-  disconnect() {
-    this.destroy()
-    this.roomCode = ''
-    this.isHost = false
-  }
+  disconnect() { this.destroy(); this.roomCode = ''; this.isHost = false }
 }
 
 export const peerManager = new PeerManager()
