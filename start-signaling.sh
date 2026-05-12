@@ -1,7 +1,4 @@
 #!/bin/bash
-echo "🚀 Iniciando servidor de sinalização..."
+echo "🚀 Iniciando Servidor de Sinalização PeerJS..."
 cd signaling-server
-echo "📦 Instalando dependências em $(pwd)..."
-npm install --production
-echo "▶️  Iniciando servidor..."
-exec node index.js
+node index.js
