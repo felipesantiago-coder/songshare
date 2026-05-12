@@ -1,4 +1,4 @@
-```
+```gitignore
 # Dependencies
 node_modules/
 
@@ -6,6 +6,14 @@ node_modules/
 dist/
 build/
 target/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+*.env.*
 
 # Python
 __pycache__/
@@ -22,38 +30,44 @@ venv/
 .mypy_cache/
 .coverage
 coverage/
+htmlcov/
 
-# Logs
-*.log
-
-# Environment variables
-.env
-.env.local
-.env.*
+# Node.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+node_modules/
+.cache/
+.nyc_output
+coverage/
+.nyc_output/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
+*~
 
 # OS
 .DS_Store
 Thumbs.db
 
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
 # Archives
 *.zip
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.gz
 *.tar
-*.tgz
+*.gz
 *.bz2
 *.xz
 *.7z
 *.rar
+*.tgz
 *.zst
 *.lz4
 *.lzh
@@ -64,4 +78,20 @@ Thumbs.db
 *.Z
 *.lz
 *.lzo
+
+# Compiled files
+*.exe
+*.dll
+*.so
+*.a
+*.o
+*.obj
+*.out
+*.class
+*.jar
+*.war
+*.ear
+*.iml
+*.ipr
+*.iws
 ```

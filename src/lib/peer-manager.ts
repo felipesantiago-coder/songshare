@@ -8,12 +8,11 @@ const IS_CUSTOM_SERVER = !!PEERJS_HOST_ENV && PEERJS_HOST_ENV !== '0.peerjs.com'
 
 const PEERJS_HOST = PEERJS_HOST_ENV || '0.peerjs.com'
 
-// Para servidores customizados (Render/Railway), usamos undefined para porta e secure
-// O PeerJS detectará automaticamente (wss://) baseado no contexto ou usará os padrões seguros
-const PEERJS_PORT = IS_CUSTOM_SERVER ? undefined : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
+// Para servidores customizados (Render/Railway), usamos porta 443 e secure=true para WSS
+const PEERJS_PORT = IS_CUSTOM_SERVER ? 443 : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
 const PEERJS_PATH = '/peerjs'
-// Removemos secure: true explícito para custom servers para evitar conflitos de detecção
-const PEERJS_SECURE = IS_CUSTOM_SERVER ? undefined : true 
+// Servidores customizados precisam de secure=true para WebSocket seguro (WSS)
+const PEERJS_SECURE = IS_CUSTOM_SERVER ? true : true 
 
 /**
  * Calcula offset de relógio e latência usando algoritmo de Cristian
