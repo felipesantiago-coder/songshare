@@ -1,4 +1,3 @@
-// server-sinalizacao.js
 const express = require('express');
 const cors = require('cors');
 const { ExpressPeerServer } = require('peer');
@@ -6,10 +5,7 @@ const { ExpressPeerServer } = require('peer');
 const app = express();
 const server = require('http').createServer(app);
 
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST']
-}));
+app.use(cors({ origin: '*' }));
 
 const peerServer = ExpressPeerServer(server, {
   debug: true,
@@ -19,15 +15,10 @@ const peerServer = ExpressPeerServer(server, {
 app.use('/peerjs', peerServer);
 
 app.get('/', (req, res) => {
-  res.send('🟢 Servidor de Sinalização SongShare está ONLINE!');
-});
-
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.send('Servidor de Sinalização SongShare ONLINE! 🟢');
 });
 
 const PORT = process.env.PORT || 9000;
-
 server.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+  console.log(`Servidor rodando na porta ${PORT}`);
 });
