@@ -8,13 +8,12 @@ const IS_CUSTOM_SERVER = !!PEERJS_HOST_ENV && PEERJS_HOST_ENV !== '0.peerjs.com'
 
 const PEERJS_HOST = PEERJS_HOST_ENV || '0.peerjs.com'
 
-// CORREÇÃO CRÍTICA:
-// Para servidores customizados (Railway), force a porta 443 explicitamente.
-// Não use undefined, pois o PeerJS pode concatenar ":undefined" na URL.
-const PEERJS_PORT = IS_CUSTOM_SERVER ? 443 : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
-
+// Para servidores customizados (Render/Railway), usamos undefined para porta e secure
+// O PeerJS detectará automaticamente (wss://) baseado no contexto ou usará os padrões seguros
+const PEERJS_PORT = IS_CUSTOM_SERVER ? undefined : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
 const PEERJS_PATH = '/peerjs'
-const PEERJS_SECURE = true 
+// Removemos secure: true explícito para custom servers para evitar conflitos de detecção
+const PEERJS_SECURE = IS_CUSTOM_SERVER ? undefined : true 
 
 /**
  * Calcula offset de relógio e latência usando algoritmo de Cristian
@@ -105,14 +104,15 @@ export class PeerManager {
     return new Promise((resolve, reject) => {
       const peerId = id || generateId()
 
-      console.log(`[SongShare] Tentando conectar em: wss://${PEERJS_HOST}:${PEERJS_PORT}${PEERJS_PATH}`)
+      console.log(`[SongShare] Tentando conectar em: ${PEERJS_HOST}${PEERJS_PATH}`)
+      console.log(`[SongShare] Config: Host=${PEERJS_HOST}, Port=${PEERJS_PORT}, Secure=${PEERJS_SECURE}`)
 
       this.peer = new Peer(peerId, {
         host: PEERJS_HOST,
-        port: PEERJS_PORT, // Agora será 443 explicitamente para Railway
+        port: PEERJS_PORT,
         path: PEERJS_PATH,
-        secure: PEERJS_SECURE,
-        debug: 0,
+        secure: PEERJS_SECURE, // Pode ser undefined agora
+        debug: 2, // Aumentado para ver detalhes do WebSocket
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -147,7 +147,7 @@ export class PeerManager {
 
       this.peer.on('error', (err) => {
         clearTimeout(timeout)
-        console.error('[SongShare] Erro detalhado do Peer:', err.type, err.message)
+        console.error('[SongShare] Peer error:', err.type, err.message)
         reject(err)
       })
 
