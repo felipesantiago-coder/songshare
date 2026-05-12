@@ -3,15 +3,17 @@ import Peer, { DataConnection, MediaConnection } from 'peerjs'
 export const PEER_PREFIX = 'songshare-'
 
 // Configuração do Servidor de Sinalização
-// Prioriza a variável de ambiente (Railway) se existir, caso contrário usa o público
-const PEERJS_HOST = process.env.NEXT_PUBLIC_PEERJS_HOST || '0.peerjs.com'
-const PEERJS_PORT = process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined
+const PEERJS_HOST_ENV = process.env.NEXT_PUBLIC_PEERJS_HOST
+const IS_CUSTOM_SERVER = !!PEERJS_HOST_ENV && PEERJS_HOST_ENV !== '0.peerjs.com'
+
+// Se for servidor customizado (Railway), força a porta 8080 e path correto
+const PEERJS_HOST = PEERJS_HOST_ENV || '0.peerjs.com'
+const PEERJS_PORT = IS_CUSTOM_SERVER ? 8080 : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
 const PEERJS_PATH = '/peerjs'
-const PEERJS_SECURE = true // Sempre true em produção (Vercel/Railway usam HTTPS/WSS)
+const PEERJS_SECURE = true // Railway e Vercel usam HTTPS/WSS
 
 /**
  * Calcula offset de relógio e latência usando algoritmo de Cristian
- * @returns { clockOffset: number, rtt: number } - offset em ms para sincronizar, RTT em ms
  */
 export function calculateClockSync(sentTime: number, receivedTime: number, serverTime: number): { clockOffset: number, rtt: number } {
   const rtt = receivedTime - sentTime
@@ -21,19 +23,14 @@ export function calculateClockSync(sentTime: number, receivedTime: number, serve
 
 /**
  * Agendar execução de comando com compensação de latência
- * @param executeAt - Timestamp absoluto quando o comando deve ser executado (em ms)
- * @param action - Ação a ser executada
- * @param minLeadTime - Tempo mínimo de antecedência para agendamento (padrão: 100ms)
  */
 export function scheduleAction(executeAt: number, action: () => void, minLeadTime = 100): void {
   const now = Date.now()
   const delay = executeAt - now
   
   if (delay <= minLeadTime) {
-    // Já passou ou está muito próximo → executa imediatamente
     action()
   } else {
-    // Agenda para o futuro
     setTimeout(action, delay - minLeadTime)
   }
 }
@@ -55,17 +52,11 @@ type Handler = (data?: any) => void
 
 /**
  * PeerManager — Gerenciador de conexões P2P via PeerJS/WebRTC.
- *
- * O HOST cria um peer cujo ID contém o código da sala (songshare-ABC123).
- * Ouvintes conectam-se diretamente ao host usando esse ID.
- * Todas as mensagens fluem de host ↔ ouvinte via data channels WebRTC.
- *
- * Voice chat usa media calls (WebRTC audio) direto entre todos os peers.
  */
 export class PeerManager {
   peer: Peer | null = null
-  connections = new Map<string, DataConnection>() // remotePeerId → DataConnection
-  mediaCalls = new Map<string, MediaConnection>() // remotePeerId → MediaConnection
+  connections = new Map<string, DataConnection>()
+  mediaCalls = new Map<string, MediaConnection>()
 
   roomCode = ''
   username = ''
@@ -98,7 +89,6 @@ export class PeerManager {
 
   /* ── Conexão ao servidor de sinalização ──────── */
 
-  /** Cria peer com ID aleatório (usado ao montar o app). Retries automatically. */
   async connect(maxRetries = 2): Promise<void> {
     this.destroy()
     let lastError: any
@@ -118,12 +108,11 @@ export class PeerManager {
     throw lastError
   }
 
-  /** Cria a instância PeerJS. */
   private _createPeer(id?: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const peerId = id || generateId()
 
-      console.log(`[SongShare] Conectando ao servidor de sinalização: ${PEERJS_HOST}`)
+      console.log(`[SongShare] Conectando ao servidor: ${PEERJS_HOST}:${PEERJS_PORT || 443}${PEERJS_PATH}`)
 
       this.peer = new Peer(peerId, {
         host: PEERJS_HOST,
@@ -152,8 +141,6 @@ export class PeerManager {
         this.emit('connected')
         console.log(`[SongShare] Conectado com sucesso! ID: ${openedId}`)
 
-        // If we're a listener in a room and lost the DataConnection,
-        // re-establish it now that signaling is back
         if (!this.isHost && this.roomCode && !this.connections.has(`${PEER_PREFIX}${this.roomCode}`)) {
           console.log('[SongShare] Signaling reconnected, re-establishing DataConnection to host...')
           this._attemptReconnectToHost(`${PEER_PREFIX}${this.roomCode}`)
@@ -164,7 +151,6 @@ export class PeerManager {
 
       this.peer.on('connection', (conn) => this._handleIncoming(conn))
 
-      // Handle incoming media calls (voice chat)
       this.peer.on('call', (mediaCall) => {
         this.emit('incoming-call', mediaCall)
       })
@@ -182,19 +168,16 @@ export class PeerManager {
     })
   }
 
-  /* ── Reconexão persistente ao servidor de sinalização ── */
+  /* ── Reconexão persistente ── */
 
-  /** Start a periodic reconnect loop. Stops automatically on success or destroy. */
   private startReconnectLoop() {
     if (this.reconnectTimer) return
     console.log('[SongShare] Disconnected from signaling server, retrying...')
 
-    // Try immediately
     if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
       try { this.peer.reconnect() } catch { /* noop */ }
     }
 
-    // Then retry every 5 seconds until reconnected or destroyed
     this.reconnectTimer = setInterval(() => {
       if (!this.peer || this.peer.destroyed) {
         this.stopReconnectLoop()
@@ -208,7 +191,6 @@ export class PeerManager {
     }, 5000)
   }
 
-  /** Stop the reconnect loop. */
   private stopReconnectLoop() {
     if (this.reconnectTimer) {
       clearInterval(this.reconnectTimer)
@@ -232,7 +214,6 @@ export class PeerManager {
         code = candidate
         break
       } catch (err: any) {
-        // ID já em uso → tentar outro
         if (err.type === 'unavailable-id' || String(err).includes('ID is taken')) continue
         throw err
       }
@@ -253,7 +234,6 @@ export class PeerManager {
     this.roomCode = code.toUpperCase()
     this.connections.clear()
 
-    // Garantir que o peer local existe e está conectado ao signaling
     if (!this.peer || this.peer.destroyed || this.peer.disconnected) {
       await this._createPeer()
     }
@@ -271,8 +251,6 @@ export class PeerManager {
         clearTimeout(timeout)
         this.connections.set(conn.peer, conn)
         this._wireConnection(conn)
-
-        // Enviar pedido de entrada
         conn.send({ type: 'join-request', username: this.username, userId: this.userId })
         resolve()
       })
@@ -293,7 +271,6 @@ export class PeerManager {
     })
   }
 
-  /** Registra handlers de data/close/error numa conexão. */
   private _wireConnection(conn: DataConnection) {
     conn.on('data', (data) => this._route(data, conn.peer))
 
@@ -302,10 +279,8 @@ export class PeerManager {
       this.connections.delete(peerId)
 
       if (!this.isHost) {
-        // Listener lost connection to host — attempt reconnection
         this._attemptReconnectToHost(peerId)
       } else {
-        // Host: a listener's connection dropped — notify others and clean up
         this.emit('listener-connection-lost', { peerId })
       }
     })
@@ -315,12 +290,8 @@ export class PeerManager {
     })
   }
 
-  /** Listener: try to re-establish DataConnection to host. Retries persistently. */
   private _attemptReconnectToHost(hostPeerId: string) {
-    // Don't try if we're no longer in a room
     if (!this.roomCode || !this.peer || this.peer.destroyed) return
-
-    // Don't start a second reconnect if one is already running for this host
     if (this._reconnectingToHost === hostPeerId) return
     this._reconnectingToHost = hostPeerId
 
@@ -329,7 +300,6 @@ export class PeerManager {
     let attempt = 0
 
     const tryConnect = () => {
-      // Stop conditions: left room, destroyed, or already reconnected
       if (!this.roomCode || !this.peer || this.peer.destroyed) {
         this._reconnectingToHost = null
         return
@@ -339,7 +309,6 @@ export class PeerManager {
         this._reconnectingToHost = null
         return
       }
-      // If signaling server itself is disconnected, wait for it to come back
       if (this.peer.disconnected) {
         attempt++
         const delay = Math.min(5000 + attempt * 1000, 15000)
@@ -398,19 +367,13 @@ export class PeerManager {
 
     switch (data.type) {
       case 'join-request':
-        if (this.isHost) {
-          this.emit('join-request', { ...data, peerId: senderPeerId })
-        }
+        if (this.isHost) this.emit('join-request', { ...data, peerId: senderPeerId })
         break
       case 'request-track-data':
-        if (this.isHost) {
-          this.emit('request-track-data', { ...data, senderPeerId })
-        }
+        if (this.isHost) this.emit('request-track-data', { ...data, senderPeerId })
         break
       case 'user-left-request':
-        if (this.isHost) {
-          this.emit('user-left-request', { ...data, peerId: senderPeerId })
-        }
+        if (this.isHost) this.emit('user-left-request', { ...data, peerId: senderPeerId })
         break
       case 'request-play':
       case 'request-pause':
@@ -418,9 +381,7 @@ export class PeerManager {
       case 'request-next':
       case 'request-previous':
       case 'change-track':
-        if (this.isHost) {
-          this.emit(data.type, { ...data, senderPeerId })
-        }
+        if (this.isHost) this.emit(data.type, { ...data, senderPeerId })
         break
       default: {
         const { type: _eventType, ...payload } = data
