@@ -5,9 +5,9 @@ const { ExpressPeerServer } = require('peer');
 const app = express();
 const server = require('http').createServer(app);
 
-// CONFIGURAÇÃO CORS CRÍTICA PARA PRODUÇÃO
+// Habilita CORS para qualquer origem (necessário para P2P)
 app.use(cors({
-  origin: '*', // Permite qualquer origem (Vercel, localhost, etc)
+  origin: '*', 
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -16,8 +16,7 @@ app.use(cors({
 const peerServer = ExpressPeerServer(server, {
   debug: true,
   path: '/peerjs',
-  // Configuração adicional de CORS dentro do próprio PeerJS
-  allow_origin: '*' 
+  allow_origin: '*' // CRUCIAL: Permite conexões de qualquer domínio (Vercel)
 });
 
 app.use('/peerjs', peerServer);
@@ -27,7 +26,6 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-
 server.listen(PORT, () => {
   console.log(`🟢 Servidor rodando na porta ${PORT}`);
 });
