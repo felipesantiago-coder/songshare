@@ -16,5 +16,5 @@ app.use('/peerjs', peerServer);
 
 app.get('/', (req, res) => res.send('SongShare Signaling Online 🚀'));
 
-const PORT = process.env.PORT || 9000;
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log(`🟢 Servidor rodando na porta ${PORT}`));
