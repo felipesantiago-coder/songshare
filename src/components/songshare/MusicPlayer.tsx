@@ -5,13 +5,9 @@ import { Play, Pause, SkipForward, SkipBack, Volume2, Search, Youtube } from "lu
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
-import { useSongShareStore } from "@/store/songshare"; // Caminho correto do store
+import { useSongShareStore } from "@/store/songshare";
 import { cn } from "@/lib/utils";
-import Playlist from "./Playlist"; // Import named default se necessário, ou ajuste conforme exportação real
 import { searchYouTube, type YouTubeVideo } from "@/lib/youtube-search";
-
-// Nota: Removemos imports de componentes que não existem (LyricsView, YouTubePlayer) para evitar erro de build.
-// A lógica do player do YouTube será tratada internamente ou via iframe direto se necessário.
 
 interface Track {
   id: string;
@@ -24,18 +20,15 @@ interface Track {
 }
 
 export function MusicPlayer() {
+  // Usamos apenas os setters e estados essenciais aqui para evitar re-renders excessivos
   const { 
-    room, 
-    socket, 
     isHost, 
     currentTrack, 
     isPlaying, 
-    volume, 
-    playlist,
+    volume,
     setCurrentTrack,
     setIsPlaying,
     setVolume,
-    setPlaylist
   } = useSongShareStore();
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -43,24 +36,22 @@ export function MusicPlayer() {
   const [isSearching, setIsSearching] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   
-  // Refs para o player de áudio/youtube
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const youtubePlayerRef = useRef<any>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // Efeito para carregar a API do YouTube se for um track do YouTube
+  // Efeito para carregar a API do YouTube
   useEffect(() => {
-    if (currentTrack?.source === 'youtube' && !youtubePlayerRef.current && window.YT) {
+    if (currentTrack?.source === 'youtube' && !youtubePlayerRef.current && typeof window !== 'undefined' && (window as any).YT) {
       initYouTubePlayer();
     } else if (currentTrack?.source === 'file' && audioRef.current) {
-       // Lógica para arquivo local
        if (isPlaying) audioRef.current.play().catch(e => console.error("Erro play:", e));
        else audioRef.current.pause();
     }
   }, [currentTrack]);
 
-  // Efeito para sincronizar play/pause vindo do store (quando outro usuário altera)
+  // Sincronizar play/pause
   useEffect(() => {
     if (currentTrack?.source === 'file' && audioRef.current) {
       if (isPlaying) audioRef.current.play().catch(e => console.error("Sync play error:", e));
@@ -77,7 +68,12 @@ export function MusicPlayer() {
     const videoId = extractVideoId(currentTrack.url);
     if (!videoId) return;
 
-    youtubePlayerRef.current = new window.YT.Player('youtube-player-container', {
+    // Destruir player anterior se existir
+    if (youtubePlayerRef.current) {
+        youtubePlayerRef.current.destroy();
+    }
+
+    youtubePlayerRef.current = new (window as any).YT.Player('youtube-player-container', {
       height: '0',
       width: '0',
       videoId: videoId,
@@ -85,6 +81,7 @@ export function MusicPlayer() {
         autoplay: isPlaying ? 1 : 0,
         controls: 0,
         modestbranding: 1,
+        rel: 0,
       },
       events: {
         onReady: onPlayerReady,
@@ -101,8 +98,7 @@ export function MusicPlayer() {
   };
 
   const onPlayerStateChange = (event: any) => {
-    // Sincronizar estado se necessário
-    if (event.data === window.YT.PlayerState.ENDED) {
+    if (event.data === (window as any).YT.PlayerState.ENDED) {
       handleSkipForward();
     }
   };
@@ -120,16 +116,17 @@ export function MusicPlayer() {
   };
 
   const handlePlayPause = () => {
+    // CORREÇÃO: Obter socket fresco no momento do clique
+    const { socket } = useSongShareStore.getState();
+    
     if (!socket || !socket.connected) {
-      console.warn("[MusicPlayer] Socket desconectado, não pode controlar playback.");
+      console.warn("[MusicPlayer] Socket desconectado no play/pause.");
       return;
     }
 
     if (isHost) {
-      // Host emite comando direto
       socket.emit('play-pause', !isPlaying);
     } else {
-      // Guest pede ao host
       socket.emit('request-play-pause');
     }
   };
@@ -149,8 +146,12 @@ export function MusicPlayer() {
   };
 
   const handleSelectVideo = (video: YouTubeVideo) => {
+    // CORREÇÃO CRÍTICA: Obter socket fresco diretamente do store global
+    const { socket } = useSongShareStore.getState();
+
     if (!socket || !socket.connected) {
-      console.error("[MusicPlayer] Socket inválido na seleção do vídeo.");
+      console.error("[MusicPlayer] Socket inválido ou desconectado. Não foi possível selecionar o vídeo.");
+      // Opcional: Mostrar toast para o usuário
       return;
     }
 
@@ -162,6 +163,8 @@ export function MusicPlayer() {
       source: 'youtube',
       thumbnail: video.thumbnail,
     };
+
+    console.log("[MusicPlayer] Emitindo seleção de vídeo:", video.title, "IsHost:", isHost);
 
     if (isHost) {
       // Host muda a faixa diretamente
@@ -177,9 +180,10 @@ export function MusicPlayer() {
   };
 
   const handleSkipForward = () => {
-     // Lógica simplificada de skip
+     const { socket } = useSongShareStore.getState();
      if (isHost && socket) {
-        // Emitir lógica de próxima música da playlist
+        // Lógica simplificada: pula para a próxima da playlist se existir
+        // Em uma implementação completa, você gerenciaria o índice da playlist aqui
         console.log("Skip forward logic here");
      }
   };
@@ -190,6 +194,7 @@ export function MusicPlayer() {
     if (audioRef.current) audioRef.current.volume = newVol / 100;
     if (youtubePlayerRef.current) youtubePlayerRef.current.setVolume(newVol);
     
+    const { socket } = useSongShareStore.getState();
     if (socket && isHost) {
       socket.emit('volume-change', newVol);
     }
