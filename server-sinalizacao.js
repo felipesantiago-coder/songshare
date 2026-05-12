@@ -18,7 +18,10 @@ const peerServer = ExpressPeerServer(server, {
   path: '/',
   allow_origin: '*', // CRUCIAL: Permite conexões de qualquer domínio (Vercel)
   concurrent_limit: 10000, // Limite de conexões simultâneas
-  generateClientId: () => require('uuid').v4() // Gera IDs únicos
+  generateClientId: () => require('uuid').v4(), // Gera IDs únicos
+  // Configurações de heartbeat para manter conexões vivas no Render
+  pingInterval: 5000, // Envia ping a cada 5 segundos
+  pingTimeout: 10000 // Timeout de 10 segundos para resposta
 });
 
 app.use('/peerjs', peerServer);

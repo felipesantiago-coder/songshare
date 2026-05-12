@@ -125,8 +125,8 @@ export class PeerManager {
         host: PEERJS_HOST,
         port: PEERJS_PORT,
         path: PEERJS_PATH,
-        secure: PEERJS_SECURE, // Pode ser undefined agora
-        debug: 2, // Aumentado para ver detalhes do WebSocket
+        secure: PEERJS_SECURE,
+        debug: 2,
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -134,6 +134,8 @@ export class PeerManager {
             { urls: 'stun:stun2.l.google.com:19302' },
           ],
         },
+        // Intervalo de ping para manter conexão ativa no Render
+        pingInterval: 5000,
       })
 
       const timeout = setTimeout(() => {
@@ -166,8 +168,16 @@ export class PeerManager {
       })
 
       this.peer.on('disconnected', () => {
+        console.warn('[SongShare] Disconnected from signaling server, attempting reconnect...')
         this.emit('disconnected')
-        this.startReconnectLoop()
+        // Não inicia o loop automaticamente - deixa o próprio Peer tentar reconectar
+        // O loop será iniciado se a reconexão automática falhar
+      })
+      
+      // Evento de close é diferente de disconnected - indica fim definitivo
+      this.peer.on('close', () => {
+        console.log('[SongShare] Peer connection closed definitively')
+        this.stopReconnectLoop()
       })
     })
   }
@@ -263,13 +273,30 @@ export class PeerManager {
 
   private _wireConnection(conn: DataConnection) {
     conn.on('data', (data) => this._route(data, conn.peer))
+    
+    // Heartbeat para manter data channel ativo no Render
+    const heartbeatInterval = setInterval(() => {
+      if (conn.open) {
+        try {
+          conn.send({ type: 'heartbeat', timestamp: Date.now() })
+        } catch (e) {
+          // Ignora erros de envio
+        }
+      }
+    }, 10000) // Envia heartbeat a cada 10 segundos
+    
     conn.on('close', () => {
+      clearInterval(heartbeatInterval)
       const peerId = conn.peer
       this.connections.delete(peerId)
       if (!this.isHost) this._attemptReconnectToHost(peerId)
       else this.emit('listener-connection-lost', { peerId })
     })
-    conn.on('error', (err) => console.error('[SongShare] Conn error:', err))
+    
+    conn.on('error', (err) => {
+      clearInterval(heartbeatInterval)
+      console.error('[SongShare] Conn error:', err)
+    })
   }
 
   private _attemptReconnectToHost(hostPeerId: string) {
@@ -311,6 +338,10 @@ export class PeerManager {
 
   private _route(data: any, senderPeerId: string) {
     if (!data || typeof data !== 'object' || !data.type) return
+    
+    // Ignora mensagens de heartbeat (são apenas para manter conexão ativa)
+    if (data.type === 'heartbeat') return
+    
     switch (data.type) {
       case 'join-request':
       case 'request-track-data':
