@@ -1,11 +1,26 @@
-```gitignore
+```
 # Dependencies
 node_modules/
 
-# Build outputs
+# Build artifacts
 dist/
 build/
 target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.class
+.Python
+env/
+venv/
+.venv/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # Logs
 *.log
@@ -13,34 +28,7 @@ target/
 # Environment variables
 .env
 .env.local
-*.env.*
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
-.pytest_cache/
-.mypy_cache/
-.coverage
-coverage/
-htmlcov/
-
-# Node.js
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-node_modules/
-.cache/
-.nyc_output
-coverage/
-.nyc_output/
+.env.*
 
 # IDE
 .vscode/
@@ -48,10 +36,14 @@ coverage/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+*.coverage
 
 # Temporary files
 *.tmp
@@ -59,15 +51,15 @@ Thumbs.db
 *.bak
 *.backup
 
-# Archives
+# Compressed files
 *.zip
-*.tar
 *.gz
+*.tar
+*.tgz
 *.bz2
 *.xz
 *.7z
 *.rar
-*.tgz
 *.zst
 *.lz4
 *.lzh
@@ -78,20 +70,25 @@ Thumbs.db
 *.Z
 *.lz
 *.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# MyPy
+.mypy_cache/
+
+# PyTest
+.pytest_cache/
+
+# Gradle
+.gradle/
 
 # Compiled files
 *.exe
 *.dll
 *.so
 *.a
-*.o
-*.obj
 *.out
 *.class
-*.jar
-*.war
-*.ear
-*.iml
-*.ipr
-*.iws
 ```

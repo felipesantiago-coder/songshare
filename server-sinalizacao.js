@@ -15,11 +15,23 @@ app.use(cors({
 
 const peerServer = ExpressPeerServer(server, {
   debug: true,
-  path: '/peerjs',
-  allow_origin: '*' // CRUCIAL: Permite conexões de qualquer domínio (Vercel)
+  path: '/',
+  allow_origin: '*', // CRUCIAL: Permite conexões de qualquer domínio (Vercel)
+  concurrent_limit: 10000, // Limite de conexões simultâneas
+  generateClientId: () => require('uuid').v4() // Gera IDs únicos
 });
 
 app.use('/peerjs', peerServer);
+
+// Endpoint de health check para o servidor PeerJS
+app.get('/peerjs/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Lista de peers conectados (para debugging)
+app.get('/peerjs/id', (req, res) => {
+  res.json({ id: 'peerjs-server', version: '1.5.5' });
+});
 
 app.get('/', (req, res) => {
   res.send('Servidor de Sinalização SongShare está ONLINE! 🚀');

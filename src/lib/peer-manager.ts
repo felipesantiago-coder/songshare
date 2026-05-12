@@ -6,13 +6,28 @@ export const PEER_PREFIX = 'songshare-'
 const PEERJS_HOST_ENV = process.env.NEXT_PUBLIC_PEERJS_HOST
 const IS_CUSTOM_SERVER = !!PEERJS_HOST_ENV && PEERJS_HOST_ENV !== '0.peerjs.com'
 
+// Se não houver host customizado, usa o servidor público peerjs.com
+// Se houver host customizado (ex: songshare-signal.onrender.com), usa esse host
 const PEERJS_HOST = PEERJS_HOST_ENV || '0.peerjs.com'
 
 // Para servidores customizados (Render/Railway), usamos porta 443 e secure=true para WSS
+// IMPORTANTE: O path deve ser apenas o caminho base, o PeerJS adiciona os parâmetros automaticamente
 const PEERJS_PORT = IS_CUSTOM_SERVER ? 443 : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
 const PEERJS_PATH = '/peerjs'
 // Servidores customizados precisam de secure=true para WebSocket seguro (WSS)
 const PEERJS_SECURE = IS_CUSTOM_SERVER ? true : true 
+// Configuração adicional para servidores customizados
+const PEERJS_CONFIG = IS_CUSTOM_SERVER ? {
+  host: PEERJS_HOST,
+  port: PEERJS_PORT,
+  path: PEERJS_PATH,
+  secure: PEERJS_SECURE,
+} : {
+  host: PEERJS_HOST,
+  port: PEERJS_PORT,
+  path: PEERJS_PATH,
+  secure: PEERJS_SECURE,
+}
 
 /**
  * Calcula offset de relógio e latência usando algoritmo de Cristian
