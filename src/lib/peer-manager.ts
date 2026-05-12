@@ -2,6 +2,13 @@ import Peer, { DataConnection, MediaConnection } from 'peerjs'
 
 export const PEER_PREFIX = 'songshare-'
 
+// Configuração do Servidor de Sinalização
+// Prioriza a variável de ambiente (Railway) se existir, caso contrário usa o público
+const PEERJS_HOST = process.env.NEXT_PUBLIC_PEERJS_HOST || '0.peerjs.com'
+const PEERJS_PORT = process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined
+const PEERJS_PATH = '/peerjs'
+const PEERJS_SECURE = true // Sempre true em produção (Vercel/Railway usam HTTPS/WSS)
+
 /**
  * Calcula offset de relógio e latência usando algoritmo de Cristian
  * @returns { clockOffset: number, rtt: number } - offset em ms para sincronizar, RTT em ms
@@ -116,7 +123,13 @@ export class PeerManager {
     return new Promise((resolve, reject) => {
       const peerId = id || generateId()
 
+      console.log(`[SongShare] Conectando ao servidor de sinalização: ${PEERJS_HOST}`)
+
       this.peer = new Peer(peerId, {
+        host: PEERJS_HOST,
+        port: PEERJS_PORT,
+        path: PEERJS_PATH,
+        secure: PEERJS_SECURE,
         debug: 0,
         config: {
           iceServers: [
@@ -136,9 +149,8 @@ export class PeerManager {
       this.peer.on('open', (openedId) => {
         clearTimeout(timeout)
         this.stopReconnectLoop()
-        // Emit 'connected' so the hook can update isConnected state
-        // This fires on initial connection AND on reconnection after a drop
         this.emit('connected')
+        console.log(`[SongShare] Conectado com sucesso! ID: ${openedId}`)
 
         // If we're a listener in a room and lost the DataConnection,
         // re-establish it now that signaling is back
@@ -328,17 +340,16 @@ export class PeerManager {
         return
       }
       // If signaling server itself is disconnected, wait for it to come back
-      // (the signaling reconnect loop will emit 'connected', which triggers _tryReconnectDataAfterSignaling)
       if (this.peer.disconnected) {
         attempt++
-        const delay = Math.min(5000 + attempt * 1000, 15000) // 5s–15s
+        const delay = Math.min(5000 + attempt * 1000, 15000)
         console.log(`[SongShare] Signaling disconnected, waiting... (next try in ${delay / 1000}s)`)
         setTimeout(tryConnect, delay)
         return
       }
 
       attempt++
-      const backoff = Math.min(2000 * Math.pow(1.3, attempt - 1), 15000) // 2s–15s exponential
+      const backoff = Math.min(2000 * Math.pow(1.3, attempt - 1), 15000)
 
       console.log(`[SongShare] DataConnection reconnect attempt ${attempt} (backoff ${Math.round(backoff / 1000)}s)`)
 
@@ -354,7 +365,6 @@ export class PeerManager {
           clearTimeout(timeout)
           this.connections.set(newConn.peer, newConn)
           this._wireConnection(newConn)
-          // Re-announce presence to get back in sync
           newConn.send({
             type: 'join-request',
             username: this.username,
@@ -402,7 +412,6 @@ export class PeerManager {
           this.emit('user-left-request', { ...data, peerId: senderPeerId })
         }
         break
-      // Guest playback control requests — only the host should handle these
       case 'request-play':
       case 'request-pause':
       case 'request-seek':
@@ -414,7 +423,6 @@ export class PeerManager {
         }
         break
       default: {
-        // Strip event type to prevent polluting room state
         const { type: _eventType, ...payload } = data
         this.emit(_eventType, payload)
       }
@@ -438,15 +446,10 @@ export class PeerManager {
     })
   }
 
-  /**
-   * Send binary chunk to a specific peer with backpressure.
-   * Waits when the DataChannel send buffer is too full to avoid silent data loss.
-   */
   async sendChunkTo(peerId: string, data: any, maxBuffer = 1 * 1024 * 1024): Promise<boolean> {
     const conn = this.connections.get(peerId)
     if (!conn?.open) return false
 
-    // PeerJS DataConnection wraps RTCDataChannel — access via _dc or dataChannel
     const dc = (conn as any)._dc || (conn as any).dataChannel
     if (dc) {
       let waits = 0
@@ -471,16 +474,10 @@ export class PeerManager {
 
   /* ── Media Calls (Voice Chat) ─────────────────── */
 
-  /** Faz uma chamada de mídia para um peer remoto. */
   callWithStream(peerId: string, stream: MediaStream): MediaConnection | null {
     if (!this.peer || this.peer.destroyed) return null
-
-    // Não chamar a si mesmo
     if (peerId === this.peer?.id) return null
 
-    // If an existing call to this peer exists, close it first.
-    // This handles the case where signaling dropped and we're re-calling
-    // with a fresh MediaConnection after toggling mic off/on.
     const existing = this.mediaCalls.get(peerId)
     if (existing) {
       try { existing.close() } catch { /* noop */ }
@@ -510,7 +507,6 @@ export class PeerManager {
     }
   }
 
-  /** Encerra chamada de mídia com um peer específico. */
   hangupMedia(peerId: string) {
     const call = this.mediaCalls.get(peerId)
     if (call) {
@@ -519,7 +515,6 @@ export class PeerManager {
     this.mediaCalls.delete(peerId)
   }
 
-  /** Encerra todas as chamadas de mídia. */
   hangupAllMedia() {
     this.mediaCalls.forEach((call) => {
       try { call.close() } catch { /* noop */ }
@@ -527,10 +522,6 @@ export class PeerManager {
     this.mediaCalls.clear()
   }
 
-  /**
-   * Broadcast binary chunk to all connections with backpressure.
-   * Waits when any DataChannel send buffer is too full.
-   */
   async broadcastChunk(data: any, maxBuffer = 1 * 1024 * 1024): Promise<void> {
     const promises: Promise<void>[] = []
     this.connections.forEach((conn, peerId) => {
@@ -553,12 +544,10 @@ export class PeerManager {
     await Promise.all(promises)
   }
 
-  /** Retorna a lista de peer IDs conectados (data connections). */
   getConnectedPeerIds(): string[] {
     return Array.from(this.connections.keys())
   }
 
-  /** Retorna o próprio peer ID. */
   getMyPeerId(): string {
     return this.peer?.id || ''
   }
