@@ -5,20 +5,29 @@ const { ExpressPeerServer } = require('peer');
 const app = express();
 const server = require('http').createServer(app);
 
-app.use(cors({ origin: '*' }));
+// CONFIGURAÇÃO CORS CRÍTICA PARA PRODUÇÃO
+app.use(cors({
+  origin: '*', // Permite qualquer origem (Vercel, localhost, etc)
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 
 const peerServer = ExpressPeerServer(server, {
   debug: true,
-  path: '/peerjs'
+  path: '/peerjs',
+  // Configuração adicional de CORS dentro do próprio PeerJS
+  allow_origin: '*' 
 });
 
 app.use('/peerjs', peerServer);
 
 app.get('/', (req, res) => {
-  res.send('Servidor de Sinalização SongShare ONLINE! 🟢');
+  res.send('Servidor de Sinalização SongShare está ONLINE! 🚀');
 });
 
-const PORT = process.env.PORT || 9000;
+const PORT = process.env.PORT || 8080;
+
 server.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`🟢 Servidor rodando na porta ${PORT}`);
 });
