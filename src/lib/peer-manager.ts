@@ -98,24 +98,23 @@ export class PeerManager {
     throw lastError
   }
 
-  private _createPeer(id?: string): Promise<string> {
+    private _createPeer(id?: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const peerId = id || generateId()
 
-      // Log apenas o host, pois a porta será implícita (443)
-      console.log(`[SongShare] Conectando ao servidor: ${PEERJS_HOST}${PEERJS_PATH}`)
+      console.log(`[SongShare] Tentando conectar em: wss://${PEERJS_HOST}${PEERJS_PATH}`)
 
       this.peer = new Peer(peerId, {
         host: PEERJS_HOST,
-        port: PEERJS_PORT, // Será undefined para custom servers, usando 443 padrão
+        // Força undefined para usar a porta padrão do protocolo (443 para wss)
+        port: undefined, 
         path: PEERJS_PATH,
-        secure: PEERJS_SECURE,
-        debug: 0,
+        secure: true, // Garante WSS
+        debug: 2,     // Habilita logs internos do PeerJS no console
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
           ],
         },
       })
@@ -123,20 +122,14 @@ export class PeerManager {
       const timeout = setTimeout(() => {
         this.peer?.destroy()
         this.peer = null
-        reject(new Error('Timeout ao conectar ao servidor de sinalização'))
+        reject(new Error('Timeout: Servidor não respondeu em 15s'))
       }, 15000)
 
       this.peer.on('open', (openedId) => {
         clearTimeout(timeout)
         this.stopReconnectLoop()
         this.emit('connected')
-        console.log(`[SongShare] Conectado com sucesso! ID: ${openedId}`)
-
-        if (!this.isHost && this.roomCode && !this.connections.has(`${PEER_PREFIX}${this.roomCode}`)) {
-          console.log('[SongShare] Signaling reconnected, re-establishing DataConnection to host...')
-          this._attemptReconnectToHost(`${PEER_PREFIX}${this.roomCode}`)
-        }
-
+        console.log(`[SongShare] ✅ CONECTADO! ID: ${openedId}`)
         resolve(openedId)
       })
 
@@ -145,11 +138,20 @@ export class PeerManager {
 
       this.peer.on('error', (err) => {
         clearTimeout(timeout)
-        console.error('[SongShare] Peer error:', err.type || err)
+        console.error('❌ ERRO CRÍTICO DO PEER:', err)
+        console.error('Tipo do erro:', err.type)
+        
+        if (err.type === 'ssl-unavailable') {
+          console.error('Solução: O servidor não suporta SSL ou está usando HTTP em vez de HTTPS.')
+        } else if (err.type === 'network') {
+          console.error('Solução: Problema de rede, firewall ou CORS bloqueando o WebSocket.')
+        }
+        
         reject(err)
       })
 
       this.peer.on('disconnected', () => {
+        console.warn('[SongShare] Desconectado do servidor de sinalização.')
         this.emit('disconnected')
         this.startReconnectLoop()
       })
