@@ -6,14 +6,28 @@ export const PEER_PREFIX = 'songshare-'
 const PEERJS_HOST_ENV = process.env.NEXT_PUBLIC_PEERJS_HOST
 const IS_CUSTOM_SERVER = !!PEERJS_HOST_ENV && PEERJS_HOST_ENV !== '0.peerjs.com'
 
+// Se não houver host customizado, usa o servidor público peerjs.com
+// Se houver host customizado (ex: songshare-signal.onrender.com), usa esse host
 const PEERJS_HOST = PEERJS_HOST_ENV || '0.peerjs.com'
 
-// Para servidores customizados (Render/Railway), usamos undefined para porta e secure
-// O PeerJS detectará automaticamente (wss://) baseado no contexto ou usará os padrões seguros
-const PEERJS_PORT = IS_CUSTOM_SERVER ? undefined : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
+// Para servidores customizados (Render/Railway), usamos porta 443 e secure=true para WSS
+// IMPORTANTE: O path deve ser apenas o caminho base, o PeerJS adiciona os parâmetros automaticamente
+const PEERJS_PORT = IS_CUSTOM_SERVER ? 443 : (process.env.NEXT_PUBLIC_PEERJS_PORT ? parseInt(process.env.NEXT_PUBLIC_PEERJS_PORT, 10) : undefined)
 const PEERJS_PATH = '/peerjs'
-// Removemos secure: true explícito para custom servers para evitar conflitos de detecção
-const PEERJS_SECURE = IS_CUSTOM_SERVER ? undefined : true 
+// Servidores customizados precisam de secure=true para WebSocket seguro (WSS)
+const PEERJS_SECURE = IS_CUSTOM_SERVER ? true : true 
+// Configuração adicional para servidores customizados
+const PEERJS_CONFIG = IS_CUSTOM_SERVER ? {
+  host: PEERJS_HOST,
+  port: PEERJS_PORT,
+  path: PEERJS_PATH,
+  secure: PEERJS_SECURE,
+} : {
+  host: PEERJS_HOST,
+  port: PEERJS_PORT,
+  path: PEERJS_PATH,
+  secure: PEERJS_SECURE,
+}
 
 /**
  * Calcula offset de relógio e latência usando algoritmo de Cristian
@@ -111,8 +125,8 @@ export class PeerManager {
         host: PEERJS_HOST,
         port: PEERJS_PORT,
         path: PEERJS_PATH,
-        secure: PEERJS_SECURE, // Pode ser undefined agora
-        debug: 2, // Aumentado para ver detalhes do WebSocket
+        secure: PEERJS_SECURE,
+        debug: 2,
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -120,6 +134,8 @@ export class PeerManager {
             { urls: 'stun:stun2.l.google.com:19302' },
           ],
         },
+        // Intervalo de ping para manter conexão ativa no Render
+        pingInterval: 5000,
       })
 
       const timeout = setTimeout(() => {
@@ -152,8 +168,16 @@ export class PeerManager {
       })
 
       this.peer.on('disconnected', () => {
+        console.warn('[SongShare] Disconnected from signaling server, attempting reconnect...')
         this.emit('disconnected')
-        this.startReconnectLoop()
+        // Não inicia o loop automaticamente - deixa o próprio Peer tentar reconectar
+        // O loop será iniciado se a reconexão automática falhar
+      })
+      
+      // Evento de close é diferente de disconnected - indica fim definitivo
+      this.peer.on('close', () => {
+        console.log('[SongShare] Peer connection closed definitively')
+        this.stopReconnectLoop()
       })
     })
   }
@@ -249,13 +273,30 @@ export class PeerManager {
 
   private _wireConnection(conn: DataConnection) {
     conn.on('data', (data) => this._route(data, conn.peer))
+    
+    // Heartbeat para manter data channel ativo no Render
+    const heartbeatInterval = setInterval(() => {
+      if (conn.open) {
+        try {
+          conn.send({ type: 'heartbeat', timestamp: Date.now() })
+        } catch (e) {
+          // Ignora erros de envio
+        }
+      }
+    }, 10000) // Envia heartbeat a cada 10 segundos
+    
     conn.on('close', () => {
+      clearInterval(heartbeatInterval)
       const peerId = conn.peer
       this.connections.delete(peerId)
       if (!this.isHost) this._attemptReconnectToHost(peerId)
       else this.emit('listener-connection-lost', { peerId })
     })
-    conn.on('error', (err) => console.error('[SongShare] Conn error:', err))
+    
+    conn.on('error', (err) => {
+      clearInterval(heartbeatInterval)
+      console.error('[SongShare] Conn error:', err)
+    })
   }
 
   private _attemptReconnectToHost(hostPeerId: string) {
@@ -297,6 +338,10 @@ export class PeerManager {
 
   private _route(data: any, senderPeerId: string) {
     if (!data || typeof data !== 'object' || !data.type) return
+    
+    // Ignora mensagens de heartbeat (são apenas para manter conexão ativa)
+    if (data.type === 'heartbeat') return
+    
     switch (data.type) {
       case 'join-request':
       case 'request-track-data':

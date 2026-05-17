@@ -2,7 +2,7 @@
 # Dependencies
 node_modules/
 
-# Build outputs
+# Build artifacts
 dist/
 build/
 target/
@@ -12,16 +12,15 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py.class
 .Python
 env/
 venv/
 .venv/
-.ENV
-.python-version
-.pytest_cache/
-.mypy_cache/
-.coverage
-coverage/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # Logs
 *.log
@@ -36,17 +35,24 @@ coverage/
 .idea/
 *.swp
 *.swo
-*.tmp
-
-# OS
+*~
 .DS_Store
 Thumbs.db
 
-# Archives
+# Coverage
+coverage/
+htmlcov/
+.coverage
+*.coverage
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Compressed files
 *.zip
-*.tar.gz
-*.tar.bz2
-*.tar.xz
 *.gz
 *.tar
 *.tgz
@@ -64,4 +70,25 @@ Thumbs.db
 *.Z
 *.lz
 *.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# MyPy
+.mypy_cache/
+
+# PyTest
+.pytest_cache/
+
+# Gradle
+.gradle/
+
+# Compiled files
+*.exe
+*.dll
+*.so
+*.a
+*.out
+*.class
 ```
